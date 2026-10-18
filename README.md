@@ -9,7 +9,8 @@ A study planner that fits homework, reading, past papers and test preparation ar
 - **Daily habits**: 15 minutes of reading and 15 minutes of past papers every day. Past papers follow the subject of your next test.
 - **Tests**: a prep session on each of the 7 days before every test, 15 minutes longer in the final two days.
 - **Calendar**: Day and Week views of classes, tests, events and planned sessions, with free time shaded. Click any empty time to add an event on that day: a one-off, every week, a holiday (no classes) or a day away. The plan moves around it.
-- **Focus timer**: start any planned session. When it ends, the session is marked done and your study time is logged.
+- **Study plan**: every day is filled up to a study target (90 minutes on school days, 3 hours on days off, both adjustable). Homework is spread evenly before each deadline, tests get daily prep, and the remaining time goes to revision sessions for the subjects that need it most: the ones with tests coming up, lower readiness, or not studied recently.
+- **Session timers**: every planned session has its own Start button on the dashboard and calendar. A bar along the bottom keeps the timer visible on every page. When it ends, the session is marked done and the time is logged. Focus mode gives a full-screen timer.
 - **Progress**: weekly hours, time per subject, a habit streak and a revision checklist.
 - **Accounts**: email and password sign-in through Supabase. Each student's planner is private and syncs across devices.
 

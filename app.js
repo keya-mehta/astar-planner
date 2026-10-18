@@ -32,13 +32,13 @@ const cap=s=>s?s[0].toUpperCase()+s.slice(1):s;
 const PRI={high:0,med:1,low:2};
 const PRIL={high:'High',med:'Medium',low:'Low'};
 const KINDS={class:'Class',school:'School',test:'Test',personal:'Event',study:'Study',holiday:'Holiday',away:'Away'};
-const PLANL={read:'Reading',paper:'Past paper',prep:'Test prep',hw:'Homework'};
+const PLANL={read:'Reading',paper:'Past paper',prep:'Test prep',hw:'Homework',study:'Revision'};
 const PALETTE=['#244B75','#3E6E72','#8A6A3A','#577A4F','#7B4F6B','#8C5545','#4F5D7C','#6B6A3E','#5E4E7A','#3F6B8C'];
 
 /* =========================================================
    Data
    ========================================================= */
-const DEFAULT_SETTINGS={name:'',goal:14,focusLen:45,readMin:15,paperMin:15,prepMin:30,prepDays:7,maxBlock:45,horizon:21,dayStart:'09:30',dayEnd:'21:30',travel:30,lunch:'13:00',dinner:'20:00',dinnerMin:30,hoursSet:false};
+const DEFAULT_SETTINGS={name:'',goal:14,focusLen:45,readMin:15,paperMin:15,prepMin:30,prepDays:7,maxBlock:45,horizon:21,studyDay:90,studyWeekend:180,dayStart:'09:30',dayEnd:'21:30',travel:30,lunch:'13:00',dinner:'20:00',dinnerMin:30,hoursSet:false};
 const DEFAULT_SUBJECTS=[['Mathematics'],['Physics'],['Chemistry'],['Biology'],['English'],['History'],['Computer Science']].map(([n],i)=>({id:uid(),name:n,color:PALETTE[i]}));
 function emptyState(name){
   return {v:2,sample:false,settings:{...DEFAULT_SETTINGS,name:name||''},subjects:DEFAULT_SUBJECTS.map(s=>({...s,id:uid()})),
@@ -225,7 +225,7 @@ function freeWindows(day,generic){
 function availOn(day){let iv=freeWindows(day);for(const x of fixedOn(day))if(!x.allDay)iv=subIv(iv,toMin(x.start)-(x.kind==='class'?0:GAP),toMin(x.end)+GAP);return iv.filter(([a,b])=>b-a>=10)}
 function freeOn(day){
   let iv=availOn(day);
-  for(const b of S.doneBlocks)if(b.day===day)iv=subIv(iv,toMin(b.start),toMin(b.end)+GAP);
+  for(const b of [...S.doneBlocks,...liveBlocks()])if(b.day===day)iv=subIv(iv,toMin(b.start),toMin(b.end)+GAP);
   if(day===TD()){const n=Math.ceil((nowHM()+5)/5)*5;iv=subIv(iv,0,n)}
   return iv.filter(([a,b])=>b-a>=10);
 }
@@ -241,8 +241,9 @@ function plan(){
   const st=S.settings,T=TD(),H=Math.max(7,Math.min(42,+st.horizon||21));
   const days=[...Array(H)].map((_,i)=>iso(addDays(today(),i)));
   const fr={};days.forEach(d=>fr[d]=freeOn(d));
-  const doneKeys=new Set(S.doneBlocks.map(b=>b.key));
-  const blocks=S.doneBlocks.map(b=>({...b,done:true}));
+  const pre=liveBlocks();
+  const doneKeys=new Set([...S.doneBlocks,...pre].map(b=>b.key));
+  const blocks=S.doneBlocks.map(b=>({...b,done:true})).concat(pre.map(b=>({...b,done:false,live:true})));
   const warnings=[];
   const add=(day,slot,meta)=>{blocks.push({...meta,day,start:fromMin(slot[0]),end:fromMin(slot[1]),min:slot[1]-slot[0],done:false})};
 
@@ -273,26 +274,49 @@ function plan(){
   }
   // 3. Homework, earliest deadline first, spread across the days before it is due.
   const tasks=openTasks().sort(byNext);
+  const tgt=d=>+(classesOn(d).length?st.studyDay:st.studyWeekend)||0;
+  const load=d=>blocks.filter(b=>b.day===d&&b.kind!=='read'&&b.kind!=='paper').reduce((a,b)=>a+b.min,0);
   for(const t of tasks){
-    const doneMin=S.doneBlocks.filter(b=>b.kind==='hw'&&b.ref===t.id).reduce((a,b)=>a+b.min,0);
+    const doneMin=[...S.doneBlocks,...pre].filter(b=>b.kind==='hw'&&b.ref===t.id).reduce((a,b)=>a+b.min,0);
     let rem=Math.max(0,(+t.est||0)-doneMin);if(!rem)continue;
     let last=t.due<=T?T:iso(addDays(parse(t.due),-1));
     if(t.due<T)last=iso(addDays(today(),1));
     const span=days.filter(d=>d<=last);
     if(!span.length){warnings.push({type:'hw',text:`“${t.title}” is due after the planning window, so it isn't scheduled yet.`});continue}
-    const perDay=Math.max(+st.maxBlock,Math.ceil(rem/span.length/5)*5);
-    for(const d of span){
-      let today_=0;
-      while(rem>0&&today_<perDay){
-        const want=Math.min(rem,+st.maxBlock,perDay-today_);
-        const s=takeEarly(fr[d],want)||takeUpTo(fr[d],want,Math.min(20,want));
-        if(!s)break;
-        add(d,s,{key:`hw:${t.id}:${d}:${s[0]}`,kind:'hw',ref:t.id,subject:t.subject,title:t.title});
-        rem-=s[1]-s[0];today_+=s[1]-s[0];
+    // Water-fill: raise each day's allowance in 30-minute steps so work spreads evenly before the deadline.
+    for(let extra=0;rem>0&&extra<=720;extra+=30){
+      for(const d of span){
+        if(rem<=0)break;
+        let cap=tgt(d)+extra-load(d);const minLen=Math.min(25,rem);
+        while(rem>0&&cap>=minLen){
+          const want=Math.min(rem,+st.maxBlock,cap);if(want<Math.min(25,rem))break;
+          const s=takeEarly(fr[d],want)||takeUpTo(fr[d],want,Math.min(25,want));if(!s)break;
+          add(d,s,{key:`hw:${t.id}:${d}:${s[0]}`,kind:'hw',ref:t.id,subject:t.subject,title:t.title});
+          const m=s[1]-s[0];rem-=m;cap-=m;
+        }
       }
-      if(rem<=0)break;
     }
     if(rem>=15)warnings.push({type:'hw',ref:t.id,text:`${fmtMin(rem)} of “${t.title}” doesn't fit before ${t.due<T?'tomorrow':fmtDate(t.due)}. Add free time or lower the estimate.`});
+  }
+  // 4. Revision sessions: top each day up to the daily study target, favouring subjects with tests coming up.
+  const ids=new Set([...S.classes.map(c=>c.subject),...S.tests.map(t=>t.subject),...S.tasks.map(t=>t.subject)]);
+  let cand=S.subjects.filter(x=>ids.has(x.id));if(!cand.length)cand=S.subjects.slice();
+  const last={};for(const l of S.log)if(l.subject&&(!last[l.subject]||l.date>last[l.subject]))last[l.subject]=l.date;
+  const count={};
+  for(const d of days){
+    const off=!classesOn(d).length,target=+(off?st.studyWeekend:st.studyDay)||0;if(!target||!cand.length)continue;
+    let need=target-blocks.filter(b=>b.day===d&&b.kind!=='read'&&b.kind!=='paper').reduce((a,b)=>a+b.min,0);
+    const used=new Set(blocks.filter(b=>b.day===d&&b.subject).map(b=>b.subject));
+    for(let g=0;g<8&&need>=20;g++){
+      const ranked=cand.map(x=>{let sc=1;
+        for(const t of S.tests)if(t.subject===x.id&&t.date>d){const n=diffDays(d,t.date);if(n<=21)sc+=(1-(+t.prep||0)/100)*12/(n+1)}
+        sc+=Math.min(7,last[x.id]?Math.max(0,diffDays(last[x.id],d)):7)*.15;sc-=(count[x.id]||0)*.25;if(used.has(x.id))sc-=3;return{x,sc}}).sort((a,b)=>b.sc-a.sc);
+      const x=ranked[0].x,len=Math.max(20,Math.min(+st.maxBlock,Math.floor(need/5)*5));
+      const slot=takeEarly(fr[d],len)||takeUpTo(fr[d],len,20);if(!slot)break;
+      const topic=S.revision.find(r=>r.subject===x.id&&!r.done);
+      add(d,slot,{key:`study:${d}:${slot[0]}`,kind:'study',ref:x.id,subject:x.id,title:`Revise ${x.name}${topic?': '+topic.topic:''}`});
+      need-=slot[1]-slot[0];used.add(x.id);count[x.id]=(count[x.id]||0)+1;last[x.id]=d;
+    }
   }
   if(missRead.length&&st.readMin>0)warnings.push({type:'habit',text:`Reading didn't fit on ${missRead.length===1?fmtDate(missRead[0]):missRead.length+' days'}. Those days have no free window long enough.`});
   if(missPaper.length&&st.paperMin>0)warnings.push({type:'habit',text:`Past papers didn't fit on ${missPaper.length===1?fmtDate(missPaper[0]):missPaper.length+' days'}.`});
@@ -304,10 +328,11 @@ function touch(){planVersion++;save()}
 const blocksOn=day=>plan().blocks.filter(b=>b.day===day);
 const planColor=b=>b.kind==='read'?'var(--gold)':sub(b.subject).color;
 
-function markBlock(key,on,actual){
+function liveBlocks(){return typeof F!=='undefined'&&F.started&&F.block?[F.block]:[]}
+function markBlock(key,on,actual,obj){
   if(on){
     if(S.doneBlocks.some(b=>b.key===key))return;
-    const b=plan().blocks.find(x=>x.key===key);if(!b)return;
+    const b=obj||plan().blocks.find(x=>x.key===key);if(!b)return;
     const min=Math.max(1,Math.round(actual||b.min));const logId=uid();
     S.log.push({id:logId,date:b.day,subject:b.subject,min,note:b.title});
     const end=actual?fromMin(Math.min(toMin(b.start)+min,24*60-1)):b.end;
@@ -369,14 +394,17 @@ function weekChart(){
   return s+'</svg>';
 }
 function dayPicker(group,sel){return `<div class="days" role="group" aria-label="Days">${WEEK.map(d=>`<button type="button" data-act="pick" data-g="${group}" data-d="${d}" class="${sel.includes(d)?'on':''}" aria-pressed="${sel.includes(d)}">${DOW[d].slice(0,2)}</button>`).join('')}</div>`}
-function planRow(b,opts={}){
-  const T=TD(),past=b.day===T&&!b.done&&toMin(b.end)<=nowHM();
-  return `<div class="prow ${b.done?'done':''} ${past?'past':''}">
+function planRow(b){
+  const T=TD(),live=F.started&&F.block&&F.block.key===b.key,past=b.day===T&&!b.done&&!live&&toMin(b.end)<=nowHM();
+  let act;
+  if(b.done)act='<span class="muted" style="font-size:12px">Done</span>';
+  else if(live)act=`<span class="live num" data-clock>${clockTxt(F.remaining)}</span>${F.running?'<button class="btn sec2 sm" data-act="t-pause">Pause</button>':`<button class="btn sm" data-act="t-resume">${ic('play')}Resume</button>`}<button class="btn sec2 sm" data-act="t-end">Finish</button>`;
+  else act=`<button class="btn sec2 sm" data-act="run-block" data-key="${esc(b.key)}" ${F.started?'disabled title="Finish the running session first"':''}>${ic('play')}Start ${b.min} min</button>`;
+  return `<div class="prow ${b.done?'done':''} ${past?'past':''} ${live?'live-row':''}">
     <input type="checkbox" class="ck" data-block="${esc(b.key)}" ${b.done?'checked':''} aria-label="Mark ${esc(b.title)} done">
-    <span class="tm num">${opts.showDay?(b.day===T?'Today':fmtDate(b.day).slice(0,3)+' '+parse(b.day).getDate())+' · ':''}${b.start}–${b.end}</span>
-    <span class="tt">${esc(b.title)}<small>${PLANL[b.kind]}${b.subject?' · '+esc(sub(b.subject).name):''} · ${fmtMin(b.min)}</small></span>
-    <span class="kind plan">Planned</span>
-    ${b.done?'<span></span>':`<button class="btn ghost sm" data-act="focus-block" data-key="${esc(b.key)}">Start</button>`}
+    <span class="tm num">${b.start}<small>${b.end}</small></span>
+    <span class="tt"><span class="ttl">${esc(b.title)}</span><small><i class="sq" style="background:${planColor(b)}"></i>${PLANL[b.kind]}${b.subject&&b.kind!=='study'?' · '+esc(sub(b.subject).name):''} · ${fmtMin(b.min)}</small></span>
+    <span class="pacts">${act}</span>
   </div>`;
 }
 function fixedRow(e){
@@ -409,7 +437,7 @@ function vDashboard(){
   const planMin=todayBlocks.reduce((a,b)=>a+b.min,0),doneMin=todayBlocks.filter(b=>b.done).reduce((a,b)=>a+b.min,0);
   const next=P.blocks.find(b=>!b.done&&(b.day>T||(b.day===T&&toMin(b.end)>nm)));
   const steps=setupSteps(),setupLeft=steps.filter(s=>!s[0]).length;
-  const upcoming=P.blocks.filter(b=>!b.done&&b.day>T).slice(0,5);
+  const upcoming=(()=>{const ds=[...new Set(P.blocks.filter(b=>!b.done&&b.day>T).map(b=>b.day))].slice(0,2);return P.blocks.filter(b=>!b.done&&ds.includes(b.day))})();
   const ws=weekStart(today()),habitDays=[...Array(7)].map((_,i)=>iso(addDays(ws,i)));
   const hasDone=(k,d)=>S.doneBlocks.some(b=>b.kind===k&&b.day===d);
   const habitRow=(k,l)=>`<div class="habit"><span>${l}</span>${habitDays.map(d=>`<i class="${hasDone(k,d)?'y':''} ${d===T?'t':''} ${d>T?'f':''}" title="${fmtDate(d)}"></i>`).join('')}</div>`;
@@ -433,7 +461,7 @@ function vDashboard(){
       ${next?`<div class="next">
         <div><div class="label">${next.day===T&&toMin(next.start)<=nm?'Now':'Next'}</div><h3>${esc(next.title)}</h3>
           <div class="meta">${next.subject?subjMark(next.subject):'<span>General</span>'}<span class="num">${next.day===T?'Today':fmtDate(next.day)}, ${next.start}–${next.end}</span><span>${PLANL[next.kind]}</span></div></div>
-        <div><button class="btn" data-act="focus-block" data-key="${esc(next.key)}">${ic('play')}Start focus</button></div></div>`:''}
+        <div style="display:flex;gap:8px;flex-wrap:wrap">${F.started&&F.block&&F.block.key===next.key?`<span class="live num big-live" data-clock>${clockTxt(F.remaining)}</span>`:`<button class="btn" data-act="run-block" data-key="${esc(next.key)}" ${F.started?'disabled':''}>${ic('play')}Start timer</button>`}<button class="btn sec2" data-act="focus-block" data-key="${esc(next.key)}">${ic('full')}Focus mode</button></div></div>`:''}
 
       <section class="sec">
         <div class="sh"><h2>Today</h2><button class="aside btn ghost sm" style="padding:0;height:auto" data-act="cal-open" data-day="${T}">Open in calendar</button></div>
@@ -449,8 +477,9 @@ function vDashboard(){
       </section>
 
       <section class="sec">
-        <div class="sh"><h2>Coming up</h2><span class="aside">Next planned sessions</span></div>
-        ${upcoming.map(b=>planRow(b,{showDay:true})).join('')||'<div class="empty">No further sessions planned.</div>'}
+        <div class="sh"><h2>Coming up</h2><a class="aside" href="#calendar">Full plan</a></div>
+        ${(()=>{const g={};upcoming.forEach(b=>(g[b.day]=g[b.day]||[]).push(b));const tm=iso(addDays(today(),1));
+          return Object.entries(g).map(([d,bs])=>`<div class="dgrp"><span>${d===tm?'Tomorrow':DOWL[parse(d).getDay()]}</span><span class="num muted">${fmtDate(d).slice(4)} · ${fmtMin(bs.reduce((a,b)=>a+b.min,0))}</span></div>`+bs.map(b=>planRow(b)).join('')).join('')})()||'<div class="empty">No further sessions planned.</div>'}
       </section>
     </div>
 
@@ -936,10 +965,10 @@ function vCalendar(){
 /* =========================================================
    Focus timer
    ========================================================= */
-const F={blockKey:null,taskId:null,subject:null,len:45,remaining:45*60000,running:false,endAt:0,seg:0,accrued:0,started:false,msg:null,doneTask:null};
+const F={block:null,blockKey:null,taskId:null,subject:null,len:45,remaining:45*60000,running:false,endAt:0,seg:0,accrued:0,started:false,msg:null,doneTask:null};
 function clockTxt(ms){const s=Math.max(0,Math.ceil(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return h?`${h}:${pad(m)}:${pad(x)}`:`${pad(m)}:${pad(x)}`}
 function focusCtx(){
-  const b=F.blockKey?plan().blocks.find(x=>x.key===F.blockKey):null;
+  const b=F.block||(F.blockKey?plan().blocks.find(x=>x.key===F.blockKey):null);
   const t=b&&b.kind==='hw'?S.tasks.find(x=>x.id===b.ref):F.taskId?S.tasks.find(x=>x.id===F.taskId):null;
   const sid=b?b.subject:t?t.subject:F.subject;
   const title=b?b.title:t?t.title:'General study';
@@ -984,22 +1013,25 @@ function vFocus(){
 let tickT=null,wake=null;
 function tick(){
   if(F.running){F.remaining=F.endAt-Date.now();if(F.remaining<=0){F.remaining=0;finish(true);return}}
+  const frac=Math.max(0,Math.min(1,1-F.remaining/(F.len*60000)));
+  document.querySelectorAll('[data-clock]').forEach(x=>x.textContent=clockTxt(F.remaining));
+  document.querySelectorAll('[data-cbar]').forEach(x=>x.style.width=(frac*100)+'%');
   const c=$('#clock');if(c){c.textContent=clockTxt(F.remaining);$('#fbar').style.width=((1-F.remaining/(F.len*60000))*100)+'%';$('#fel').textContent=fmtMin(Math.floor((F.len*60000-F.remaining)/60000))+' elapsed'}
 }
 async function lockWake(){try{wake=await navigator.wakeLock?.request('screen')}catch(e){wake=null}}
-function tStart(){if(F.remaining<=0)F.remaining=F.len*60000;F.started=true;F.running=true;F.seg=Date.now();F.endAt=Date.now()+F.remaining;F.msg=null;F.doneTask=null;clearInterval(tickT);tickT=setInterval(tick,250);lockWake();render()}
+function tStart(){if(F.remaining<=0)F.remaining=F.len*60000;if(!F.started&&F.blockKey&&!F.block){const b=plan().blocks.find(x=>x.key===F.blockKey);if(b&&!b.done)F.block={...b}}F.started=true;planVersion++;F.running=true;F.seg=Date.now();F.endAt=Date.now()+F.remaining;F.msg=null;F.doneTask=null;clearInterval(tickT);tickT=setInterval(tick,250);lockWake();render()}
 function tPause(){if(!F.running)return;F.remaining=F.endAt-Date.now();F.accrued+=Date.now()-F.seg;F.running=false;clearInterval(tickT);try{wake?.release()}catch(e){}render()}
 function finish(completed){
   if(F.running){F.accrued+=Date.now()-F.seg;F.running=false}
   clearInterval(tickT);try{wake?.release()}catch(e){}
   const min=Math.round(F.accrued/60000),{b,t,sid,title}=focusCtx();
   if(min>=1){
-    if(b&&!b.done)markBlock(b.key,true,min);
+    if(b&&!b.done){const bb={...b};F.block=null;F.started=false;markBlock(bb.key,true,min,bb)}
     else{S.log.push({id:uid(),date:TD(),subject:sid||null,min,note:title});touch()}
   }
   F.msg=min>=1?`${completed?'Session complete.':'Session ended.'} ${fmtMin(min)} logged${b?' and the planned session marked done':''}.`:'Session ended. Under a minute, so nothing was logged.';
   F.doneTask=t&&min>=1?t.id:null;
-  F.started=false;F.accrued=0;F.blockKey=null;F.remaining=F.len*60000;
+  F.started=false;F.block=null;F.accrued=0;F.blockKey=null;F.remaining=F.len*60000;planVersion++;
   if(completed)chime();
   render();
 }
@@ -1069,7 +1101,7 @@ function vSettings(){
     <form class="body" id="ruleForm"><div class="row">
       ${num('rf-read','Reading per day (min)',st.readMin,0,120)}${num('rf-paper','Past papers per day (min)',st.paperMin,0,120)}${num('rf-prep','Test prep per day (min)',st.prepMin,10,180)}
     </div><div class="row">
-      ${num('rf-days','Prep starts (days before test)',st.prepDays,1,21,1,190)}${num('rf-block','Longest homework block (min)',st.maxBlock,15,180,5,190)}${num('rf-hor','Plan ahead (days)',st.horizon,7,42,1)}
+      ${num('rf-sday','Study per school day (min)',st.studyDay,0,600,15,190)}${num('rf-swe','Study per day off (min)',st.studyWeekend,0,720,15,190)}</div><div class="row">${num('rf-days','Prep starts (days before test)',st.prepDays,1,21,1,190)}${num('rf-block','Longest homework block (min)',st.maxBlock,15,180,5,190)}${num('rf-hor','Plan ahead (days)',st.horizon,7,42,1)}
       <button class="btn" type="submit">Save rules</button></div>
       <span class="muted" style="font-size:12.5px">Prep sessions in the last two days before a test are 15 minutes longer. Past papers follow the subject of your next test.</span>
       ${ui.flash==='rules'?'<span class="ok">Saved. The plan has been rebuilt.</span>':''}</form></div>
@@ -1132,6 +1164,13 @@ function render(){
   if(v==='focus'&&fsOn)$('#stage')?.classList.add('fs');
   if(v!=='focus'&&fsOn)setFs(false);
   lastView=v;ui.flash=null;
+  renderRunbar();
+}
+function renderRunbar(){
+  let el=$('#runbar');if(!el){el=document.createElement('div');el.id='runbar';el.setAttribute('role','region');el.setAttribute('aria-label','Running session');document.body.appendChild(el)}
+  const show=S&&F.started&&currentView()!=='focus';el.hidden=!show;document.body.classList.toggle('running',!!show);if(!show)return;
+  const{title}=focusCtx();const frac=Math.max(0,Math.min(1,1-F.remaining/(F.len*60000)));
+  el.innerHTML=`<div class="rb-bar"><span data-cbar style="width:${frac*100}%"></span></div><div class="rb-in"><div class="rb-t"><span class="label">${F.running?'In session':'Paused'}</span><b>${esc(title)}</b></div><span class="rb-c num" data-clock>${clockTxt(F.remaining)}</span><div class="rb-a">${F.running?'<button class="btn sec2 sm" data-act="t-pause">Pause</button>':`<button class="btn sm" data-act="t-resume">${ic('play')}Resume</button>`}<button class="btn sec2 sm" data-act="t-end">Finish</button><a class="btn ghost sm" href="#focus">${ic('full')}</a></div></div>`;
 }
 function go(v){if(location.hash==='#'+v)render();else location.hash=v}
 function startApp(){
@@ -1183,6 +1222,7 @@ document.addEventListener('click',e=>{
     case 'block-done':markBlock(a.dataset.key,true);ui.selEvent=null;render();break;
     case 'block-undo':markBlock(a.dataset.key,false);ui.selEvent=null;render();break;
     case 'focus-block':focusOnBlock(a.dataset.key);break;
+    case 'run-block':{if(F.started)break;const b=plan().blocks.find(x=>x.key===a.dataset.key);if(!b)break;F.block={...b};F.blockKey=b.key;F.taskId=null;F.subject=b.subject;F.len=b.min;F.remaining=b.min*60000;F.accrued=0;F.msg=null;tStart();break}
     case 'len':F.len=+a.dataset.m;F.remaining=F.len*60000;render();break;
     case 't-start':case 't-resume':tStart();break;
     case 't-pause':tPause();break;
@@ -1251,7 +1291,7 @@ document.addEventListener('submit',e=>{
     if(!F.started){F.len=S.settings.focusLen;F.remaining=F.len*60000}touch();ui.flash='prof';render()}
   if(f.id==='ruleForm'){const st=S.settings,n=(id,lo,hi,d)=>Math.min(hi,Math.max(lo,Math.round(+$(id).value)))||d;
     st.readMin=Math.min(120,Math.max(0,Math.round(+$('#rf-read').value||0)));st.paperMin=Math.min(120,Math.max(0,Math.round(+$('#rf-paper').value||0)));
-    st.prepMin=n('#rf-prep',10,180,30);st.prepDays=n('#rf-days',1,21,7);st.maxBlock=n('#rf-block',15,180,45);st.horizon=n('#rf-hor',7,42,21);
+    st.prepMin=n('#rf-prep',10,180,30);st.studyDay=Math.min(600,Math.max(0,Math.round(+$('#rf-sday').value||0)));st.studyWeekend=Math.min(720,Math.max(0,Math.round(+$('#rf-swe').value||0)));st.prepDays=n('#rf-days',1,21,7);st.maxBlock=n('#rf-block',15,180,45);st.horizon=n('#rf-hor',7,42,21);
     touch();ui.flash='rules';render()}
   if(f.id==='subForm'){const n=$('#nf-name').value.trim();if(!n)return;S.subjects.push({id:uid(),name:n,color:$('#nf-color').value});touch();render()}
   if(f.id==='revForm'){const t=$('#rf-topic').value.trim();if(!t)return;S.revision.push({id:uid(),subject:$('#rf-sub').value,topic:t,done:false});touch();render()}
