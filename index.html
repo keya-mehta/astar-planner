@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Quire Study Planner</title>
+<meta name="description" content="A study planner that fits homework, reading, past papers and test preparation around your classes and free time.">
+<meta name="theme-color" content="#14243A">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'%3E%3Crect width='26' height='26' fill='%2314243A'/%3E%3Cpath d='M4 7.5c3-1.4 6-1.4 9 .7 3-2.1 6-2.1 9-.7v11c-3-1.4-6-1.4-9 .7-3-2.1-6-2.1-9-.7z' fill='none' stroke='%23B89A57' stroke-width='1.3'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-dash" viewBox="0 0 16 16"><path d="M2 2.5h5v5H2zM9 2.5h5v3H9zM9 7.5h5v6H9zM2 9.5h5v4H2z"/></symbol>
+    <symbol id="i-week" viewBox="0 0 16 16"><path d="M2 2.5h12v11H2zM2 6h12M2 9.5h12M6 2.5v11M10 2.5v11"/></symbol>
+    <symbol id="i-tasks" viewBox="0 0 16 16"><path d="M2 3.5h2v2H2zM2 10.5h2v2H2zM6.5 4.5H14M6.5 11.5H14M6.5 8H14"/></symbol>
+    <symbol id="i-test" viewBox="0 0 16 16"><path d="M3.5 1.5h7l2 2v11h-9zM5.5 6h5M5.5 8.5h5M5.5 11h3"/></symbol>
+    <symbol id="i-cal" viewBox="0 0 16 16"><path d="M2 3.5h12v10.5H2zM2 6.5h12M5 1.5v3M11 1.5v3"/></symbol>
+    <symbol id="i-focus" viewBox="0 0 16 16"><path d="M8 14.5a6 6 0 1 0 0-12 6 6 0 0 0 0 12zM8 5v3.5l2.2 1.4M6.5 1h3"/></symbol>
+    <symbol id="i-prog" viewBox="0 0 16 16"><path d="M2 14h12M3.5 14V9M7 14V5M10.5 14V7.5M14 14V3"/></symbol>
+    <symbol id="i-set" viewBox="0 0 16 16"><path d="M2 4h7M12 4h2M2 12h2M7 12h7M9 2.5v3M7 10.5v3M2 8h3M8 8h6M5 6.5v3"/></symbol>
+    <symbol id="i-int" viewBox="0 0 16 16"><path d="M6 10 10 6M7 4.5l1.5-1.5a3 3 0 0 1 4.5 4.5L11.5 9M9 11.5 7.5 13A3 3 0 0 1 3 8.5L4.5 7"/></symbol>
+    <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 16 16"><path d="M10.5 2.5l3 3-8 8H2.5v-3z"/></symbol>
+    <symbol id="i-del" viewBox="0 0 16 16"><path d="M3 4.5h10M6 4.5V2.5h4v2M4.5 4.5l.7 9h5.6l.7-9"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 16 16"><path d="M2 4h12M2 8h12M2 12h12"/></symbol>
+    <symbol id="i-l" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
+    <symbol id="i-r" viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"/></symbol>
+    <symbol id="i-full" viewBox="0 0 16 16"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></symbol>
+    <symbol id="i-up" viewBox="0 0 16 16"><path d="M8 11V2.5M4.5 6 8 2.5 11.5 6M2.5 10.5v3h11v-3"/></symbol>
+  </defs>
+</svg>
+
+<div id="auth"><div class="boot">Loading…</div></div>
+
+<header class="topbar">
+  <button type="button" data-act="menu" aria-label="Open navigation"><svg><use href="#i-menu"/></svg></button>
+  <b>Quire</b><span id="topTitle"></span>
+</header>
+<div class="scrim" data-act="menu-close"></div>
+
+<aside class="side" id="side" aria-label="Main navigation">
+  <div class="brand">
+    <svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="#B89A57" stroke-width="1.3" aria-hidden="true"><path d="M3 6.5c3.5-1.6 7-1.6 10 .8 3-2.4 6.5-2.4 10-.8v13c-3.5-1.6-7-1.6-10 .8-3-2.4-6.5-2.4-10-.8z"/><path d="M13 7.3v13"/></svg>
+    <div><b>Quire</b><small>Study planner</small></div>
+  </div>
+  <ul class="nav" id="navTop"></ul>
+  <div class="grow"></div>
+  <ul class="nav" id="navBottom"></ul>
+  <div class="acct" id="acct"></div>
+</aside>
+
+<main><div class="wrap" id="view"></div></main>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
