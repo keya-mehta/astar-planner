@@ -4,11 +4,11 @@ A study planner that fits homework, reading, past papers and test preparation ar
 
 ## What it does
 
-- **Timetable**: upload your classes from a CSV file (or paste them, or add them one by one), and set the times you're free each day. You can also add regular commitments such as sport or tuition.
+- **Timetable**: import your classes from a Google Sheets link, an Excel or CSV file, or cells pasted from Google Sheets. Any layout works. Free time is worked out from your classes and a few simple rules (time to get home, dinner, when you stop for the night).
 - **Homework**: add what's due, when, and how long it will take. The planner splits it into sessions that finish the day before it's due.
 - **Daily habits**: 15 minutes of reading and 15 minutes of past papers every day. Past papers follow the subject of your next test.
 - **Tests**: a prep session on each of the 7 days before every test, 15 minutes longer in the final two days.
-- **Calendar**: a weekly timetable with classes, tests and planned sessions. Free time is shaded.
+- **Calendar**: Day and Week views of classes, tests, events and planned sessions, with free time shaded. Click any empty time to add an event on that day: a one-off, every week, a holiday (no classes) or a day away. The plan moves around it.
 - **Focus timer**: start any planned session. When it ends, the session is marked done and your study time is logged.
 - **Progress**: weekly hours, time per subject, a habit streak and a revision checklist.
 - **Accounts**: email and password sign-in through Supabase. Each student's planner is private and syncs across devices.

@@ -215,8 +215,8 @@ tr:hover .rowact, .rowact:focus-within{opacity:1}
 .cal .corner{border-bottom:1px solid var(--line-strong)}
 .cal .corner2{border-bottom:1px solid var(--line);font-size:10.5px;color:var(--slate);padding:5px 6px 0 0;text-align:right}
 .cal .hours{position:relative}
-.cal .hours div{height:46px;font-size:10.5px;color:var(--slate);text-align:right;padding-right:8px;transform:translateY(-7px)}
-.cal .day{position:relative;border-left:1px solid var(--line);background-image:repeating-linear-gradient(to bottom,var(--line) 0,var(--line) 1px,transparent 1px,transparent 46px)}
+.cal .hours div{height:var(--hh,46px);font-size:10.5px;color:var(--slate);text-align:right;padding-right:8px;transform:translateY(-7px)}
+.cal .day{position:relative;border-left:1px solid var(--line);background-image:repeating-linear-gradient(to bottom,var(--line) 0,var(--line) 1px,transparent 1px,transparent var(--hh,46px))}
 .cal .day.today{background-color:color-mix(in srgb,var(--gold) 4%,transparent)}
 .ev{position:absolute;padding:3px 6px;font-size:11.5px;line-height:1.3;overflow:hidden;border:0;border-left:2px solid var(--c);background:color-mix(in srgb,var(--c) 13%,var(--surface));color:var(--ink);text-align:left;cursor:pointer;font-family:inherit}
 .ev:hover,.ev.sel{background:color-mix(in srgb,var(--c) 22%,var(--surface))}
@@ -398,3 +398,24 @@ code.fmt{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--hover)
   .prow .kind{display:none}
   .prow.fixed{grid-template-columns:18px 70px minmax(0,1fr)}
 }
+
+/* ---------- v3: grids, events, import ---------- */
+.cal .day.slot{cursor:cell}
+.cal .ad .adi{display:block;width:100%;text-align:left;font:11px var(--sans);padding:1px 5px;background:var(--hover);border:0;border-left:2px solid var(--school);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink);cursor:pointer}
+.cal.wide .ev{padding:4px 10px}
+.cal.wide .ev b{font-size:12.5px}
+.cal .ev.personal{border-left-color:var(--personal)}
+.dayview{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:0 28px;align-items:start}
+.dayview .daylist{border-top:1px solid var(--line-strong)}
+.dayview .daylist .lrow:hover{background:var(--hover)}
+.evf{grid-template-columns:minmax(0,1.6fr) minmax(0,1.3fr) minmax(0,1fr) repeat(2,minmax(0,.8fr)) auto auto;border:1px solid var(--line-strong);border-top:2px solid var(--gold);background:var(--surface);padding:12px 14px 14px;margin-bottom:12px}
+.evf .evf-h{grid-column:1/-1;display:flex;justify-content:space-between;align-items:center}
+.evf .ckl{display:inline-flex;align-items:center;gap:7px;height:34px;font-size:13px;color:var(--ink);white-space:nowrap}
+.hours-rules{display:flex;flex-direction:column;gap:10px;max-width:760px}
+.hours-rules p{margin:0;line-height:2.4;font-size:14px}
+.in.inl{display:inline-block;width:auto;height:30px;padding:0 6px;margin:0 2px;vertical-align:baseline}
+.in.inl[type=number]{width:64px}
+#previewSec{border-top:2px solid var(--gold)}
+@media (max-width:1100px){.evf{grid-template-columns:repeat(3,minmax(0,1fr))}.evf .f-title{grid-column:1/-1}}
+@media (max-width:900px){.dayview{grid-template-columns:minmax(0,1fr)}.dayview .daylist{margin-top:14px}}
+@media (max-width:640px){.evf{grid-template-columns:repeat(2,minmax(0,1fr))}.hours-rules p{font-size:13.5px}}

@@ -31,21 +31,18 @@ const ic=(id,cls='')=>`<svg class="${cls}"><use href="#i-${id}"/></svg>`;
 const cap=s=>s?s[0].toUpperCase()+s.slice(1):s;
 const PRI={high:0,med:1,low:2};
 const PRIL={high:'High',med:'Medium',low:'Low'};
-const KINDS={class:'Class',school:'School',test:'Test',personal:'Personal',study:'Study'};
+const KINDS={class:'Class',school:'School',test:'Test',personal:'Event',study:'Study',holiday:'Holiday',away:'Away'};
 const PLANL={read:'Reading',paper:'Past paper',prep:'Test prep',hw:'Homework'};
 const PALETTE=['#244B75','#3E6E72','#8A6A3A','#577A4F','#7B4F6B','#8C5545','#4F5D7C','#6B6A3E','#5E4E7A','#3F6B8C'];
 
 /* =========================================================
    Data
    ========================================================= */
-const DEFAULT_SETTINGS={name:'',goal:14,focusLen:45,readMin:15,paperMin:15,prepMin:30,prepDays:7,maxBlock:45,horizon:21};
+const DEFAULT_SETTINGS={name:'',goal:14,focusLen:45,readMin:15,paperMin:15,prepMin:30,prepDays:7,maxBlock:45,horizon:21,dayStart:'09:30',dayEnd:'21:30',travel:30,lunch:'13:00',dinner:'20:00',dinnerMin:30,hoursSet:false};
 const DEFAULT_SUBJECTS=[['Mathematics'],['Physics'],['Chemistry'],['Biology'],['English'],['History'],['Computer Science']].map(([n],i)=>({id:uid(),name:n,color:PALETTE[i]}));
 function emptyState(name){
-  const free=[];
-  [1,2,3,4,5].forEach(d=>free.push({id:uid(),dow:d,start:'16:00',end:'20:00'}));
-  [6,0].forEach(d=>{free.push({id:uid(),dow:d,start:'10:00',end:'12:30'});free.push({id:uid(),dow:d,start:'16:00',end:'19:00'})});
-  return {v:2,sample:false,freeDefault:true,settings:{...DEFAULT_SETTINGS,name:name||''},subjects:DEFAULT_SUBJECTS.map(s=>({...s,id:uid()})),
-    classes:[],free,tasks:[],tests:[],events:[],doneBlocks:[],log:[],revision:[]};
+  return {v:2,sample:false,settings:{...DEFAULT_SETTINGS,name:name||''},subjects:DEFAULT_SUBJECTS.map(s=>({...s,id:uid()})),
+    classes:[],tasks:[],tests:[],events:[],doneBlocks:[],log:[],revision:[]};
 }
 function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
 function exampleState(name){
@@ -56,10 +53,6 @@ function exampleState(name){
   const rooms={math:'Room 12',phys:'Physics lab',chem:'Chem lab',bio:'Room 7',eng:'Room 3',hist:'Room 5',cs:'IT room'};
   const classes=[];let k=0;
   [1,2,3,4,5].forEach(d=>periods.forEach(([s,e],i)=>{const sub=rot[(k++ +d)%rot.length];classes.push({id:uid(),subject:sub,dow:[d],start:s,end:e,room:rooms[sub]})}));
-  const free=[];
-  [1,3,5].forEach(d=>free.push({id:uid(),dow:d,start:'15:30',end:'21:00'}));
-  [2,4].forEach(d=>free.push({id:uid(),dow:d,start:'18:00',end:'21:00'}));
-  [6,0].forEach(d=>{free.push({id:uid(),dow:d,start:'09:30',end:'13:00'});free.push({id:uid(),dow:d,start:'15:00',end:'21:00'})});
   const t=(title,subject,due,est,priority,type,done=false)=>({id:uid(),title,subject,due:D(due),est,priority,type,done});
   const tasks=[
     t('Integration by parts, worksheet 7','math',1,45,'high','Homework'),
@@ -80,15 +73,16 @@ function exampleState(name){
     for(let j=0;j<n;j++)log.push({id:uid(),date:iso(d),subject:subs[Math.floor(r()*subs.length)],min:Math.round(tot/n/5)*5})}
   const rv={math:['Differentiation','Integration','Sequences and series','Vectors'],phys:['Kinematics',"Newton's laws",'Waves'],chem:['Mole concept','Bonding','Organic nomenclature'],eng:['Jane Eyre: themes','Essay structure']};
   const revision=[];for(const s in rv)rv[s].forEach((topic,i)=>revision.push({id:uid(),subject:s,topic,done:i<2}));
-  return {v:2,sample:true,settings:{...DEFAULT_SETTINGS,name:name||''},subjects,classes,free,tasks,tests,events,doneBlocks:[],log,revision};
+  return {v:2,sample:true,settings:{...DEFAULT_SETTINGS,name:name||'',hoursSet:true},subjects,classes,tasks,tests,events,doneBlocks:[],log,revision};
 }
 function normalize(o){
   if(!o||typeof o!=='object')return null;
   const base=emptyState('');
   const s={...base,...o,settings:{...DEFAULT_SETTINGS,...(o.settings||{})}};
-  for(const k of ['subjects','classes','free','tasks','tests','events','doneBlocks','log','revision'])if(!Array.isArray(s[k]))s[k]=[];
+  for(const k of ['subjects','classes','tasks','tests','events','doneBlocks','log','revision'])if(!Array.isArray(s[k]))s[k]=[];
   s.events=s.events.filter(e=>e.kind!=='study'); // v1 hand-made study sessions are now planned automatically
   s.log.forEach(l=>{if(!l.id)l.id=uid()});
+  delete s.free;delete s.freeDefault;
   s.v=2;return s;
 }
 
@@ -200,17 +194,18 @@ const byNext=(a,b)=>a.due<b.due?-1:a.due>b.due?1:PRI[a.priority]-PRI[b.priority]
 function relShort(d){const n=diffDays(TD(),d);return n<0?`${-n} d overdue`:n===0?'due today':n===1?'due tomorrow':`due ${fmtDate(d)}`}
 function dueHTML(d,done){const n=diffDays(TD(),d);let rel=n<0?`${-n} d overdue`:n===0?'Today':n===1?'Tomorrow':`In ${n} days`;if(done)rel='Done';
   return `<span class="due ${n<0&&!done?'late':''}">${fmtDate(d)}<small>${rel}</small></span>`}
+function dayFlags(day){const evs=S.events.filter(e=>e.allDay&&e.day===day);return{holiday:evs.some(e=>e.kind==='holiday'),away:evs.some(e=>e.kind==='away')}}
+function classesOn(day,generic){const wd=parse(day).getDay();if(!generic&&dayFlags(day).holiday)return[];return S.classes.filter(c=>c.dow.includes(wd)&&(generic||!(c.skip||[]).includes(day)))}
 function fixedOn(day){
   const wd=parse(day).getDay(),out=[];
-  for(const c of S.classes)if(c.dow.includes(wd))out.push({id:c.id,src:'class',kind:'class',title:sub(c.subject).name,subject:c.subject,room:c.room,start:c.start,end:c.end});
-  for(const e of S.events)if(e.day===day||(Array.isArray(e.dow)&&e.dow.includes(wd)))out.push({...e,src:'event'});
+  for(const c of classesOn(day))out.push({id:c.id,src:'class',kind:'class',title:sub(c.subject).name,subject:c.subject,room:c.room,start:c.start,end:c.end});
+  for(const e of S.events)if(e.day===day||(Array.isArray(e.dow)&&e.dow.includes(wd)&&!(e.skip||[]).includes(day)))out.push({...e,src:'event'});
   for(const t of S.tests)if(t.date===day)out.push({id:t.id,src:'test',kind:'test',title:t.title,subject:t.subject,start:t.time,end:fromMin(toMin(t.time)+(t.dur||60))});
   return out.sort((a,b)=>(b.allDay?1:0)-(a.allDay?1:0)||toMin(a.start)-toMin(b.start));
 }
 const minsOn=day=>S.log.filter(l=>l.date===day).reduce((a,l)=>a+l.min,0);
 function weekMins(off=0){const ws=weekStart(addDays(today(),off*7));const a=iso(ws),b=iso(addDays(ws,6));return S.log.filter(l=>l.date>=a&&l.date<=b).reduce((s,l)=>s+l.min,0)}
 function revStats(sid){const r=S.revision.filter(x=>!sid||x.subject===sid);return{done:r.filter(x=>x.done).length,total:r.length}}
-function freeMinsWeek(){return S.free.reduce((a,f)=>a+Math.max(0,toMin(f.end)-toMin(f.start)),0)}
 
 /* =========================================================
    Planner
@@ -218,10 +213,18 @@ function freeMinsWeek(){return S.free.reduce((a,f)=>a+Math.max(0,toMin(f.end)-to
 const GAP=5;
 function mergeIv(iv){iv=iv.map(x=>[x[0],x[1]]).sort((a,b)=>a[0]-b[0]);const o=[];for(const x of iv){if(o.length&&x[0]<=o[o.length-1][1])o[o.length-1][1]=Math.max(o[o.length-1][1],x[1]);else o.push(x)}return o}
 function subIv(iv,s,e){const o=[];for(const[a,b] of iv){if(e<=a||s>=b){o.push([a,b]);continue}if(s>a)o.push([a,s]);if(e<b)o.push([e,b])}return o}
-function freeWindows(day){return mergeIv(S.free.filter(f=>f.dow===parse(day).getDay()).map(f=>[toMin(f.start),toMin(f.end)]))}
+function freeWindows(day,generic){
+  const st=S.settings;if(!generic&&dayFlags(day).away)return[];
+  const cls=classesOn(day,generic),end=toMin(st.dayEnd);
+  const start=cls.length?Math.max(...cls.map(c=>toMin(c.end)))+(+st.travel||0):toMin(st.dayStart);
+  let iv=start<end?[[start,end]]:[];
+  if(!cls.length){const l=toMin(st.lunch);iv=subIv(iv,l,l+45)}
+  if(+st.dinnerMin>0){const d=toMin(st.dinner);iv=subIv(iv,d,d+(+st.dinnerMin))}
+  return iv.filter(([a,b])=>b-a>=10);
+}
+function availOn(day){let iv=freeWindows(day);for(const x of fixedOn(day))if(!x.allDay)iv=subIv(iv,toMin(x.start)-(x.kind==='class'?0:GAP),toMin(x.end)+GAP);return iv.filter(([a,b])=>b-a>=10)}
 function freeOn(day){
-  let iv=freeWindows(day);
-  for(const x of fixedOn(day))if(!x.allDay)iv=subIv(iv,toMin(x.start)-(x.kind==='class'?0:GAP),toMin(x.end)+GAP);
+  let iv=availOn(day);
   for(const b of S.doneBlocks)if(b.day===day)iv=subIv(iv,toMin(b.start),toMin(b.end)+GAP);
   if(day===TD()){const n=Math.ceil((nowHM()+5)/5)*5;iv=subIv(iv,0,n)}
   return iv.filter(([a,b])=>b-a>=10);
@@ -389,7 +392,7 @@ function fixedRow(e){
 function setupSteps(){
   const steps=[
     [S.classes.length>0,'Add your classes','Upload your timetable or enter it period by period.','timetable','Add classes'],
-    [!S.freeDefault,'Set the times you are free','Planned sessions only go into these windows.','timetable','Set free time'],
+    [S.settings.hoursSet,'Check your study hours','Free time comes from your classes. Set when you get home and when you stop.','timetable','Review'],
     [S.tasks.length>0,'Add homework','With the due date and how long it will take.','tasks','Add homework'],
     [S.tests.length>0,'Add upcoming tests','Prep sessions start a week before each one.','tests','Add tests']];
   return steps;
@@ -406,7 +409,6 @@ function vDashboard(){
   const planMin=todayBlocks.reduce((a,b)=>a+b.min,0),doneMin=todayBlocks.filter(b=>b.done).reduce((a,b)=>a+b.min,0);
   const next=P.blocks.find(b=>!b.done&&(b.day>T||(b.day===T&&toMin(b.end)>nm)));
   const steps=setupSteps(),setupLeft=steps.filter(s=>!s[0]).length;
-  const merged=[...todayFixed.map(e=>({t:e.allDay?-1:toMin(e.start),h:fixedRow(e)})),...todayBlocks.map(b=>({t:toMin(b.start),h:planRow(b)}))].sort((a,b)=>a.t-b.t);
   const upcoming=P.blocks.filter(b=>!b.done&&b.day>T).slice(0,5);
   const ws=weekStart(today()),habitDays=[...Array(7)].map((_,i)=>iso(addDays(ws,i)));
   const hasDone=(k,d)=>S.doneBlocks.some(b=>b.kind===k&&b.day===d);
@@ -434,8 +436,11 @@ function vDashboard(){
         <div><button class="btn" data-act="focus-block" data-key="${esc(next.key)}">${ic('play')}Start focus</button></div></div>`:''}
 
       <section class="sec">
-        <div class="sh"><h2>Today</h2><a class="aside" href="#calendar">Week view</a></div>
-        ${merged.length?merged.map(x=>x.h).join(''):`<div class="empty">Nothing planned today${S.free.some(f=>f.dow===now.getDay())?'.':'. You have no free time set for '+DOWL[now.getDay()]+'.'}</div>`}
+        <div class="sh"><h2>Today</h2><button class="aside btn ghost sm" style="padding:0;height:auto" data-act="cal-open" data-day="${T}">Open in calendar</button></div>
+        ${detailPanel()}
+        <div class="calwrap">${(()=>{const R=gridRange();return timeGrid({cols:[dayCol(T,{head:`<b>${DOWL[now.getDay()]}</b><span class="num">${now.getDate()} ${MON[now.getMonth()]}</span>`})],H0:R.H0,H1:R.H1,HH:30,minW:0,wide:true})})()}</div>
+        <div class="sh" style="margin-top:14px"><h2>Today's study sessions</h2><span class="aside num">${fmtMin(doneMin)} of ${fmtMin(planMin)} done</span></div>
+        ${todayBlocks.map(b=>planRow(b)).join('')||`<div class="empty">No study planned today${availOn(T).length?'.':'. There is no free time left today.'}</div>`}
       </section>
 
       <section class="sec">
@@ -473,51 +478,247 @@ function vDashboard(){
 }
 
 /* =========================================================
-   Timetable: classes and free time
+   Timetable: classes, study hours and import
    ========================================================= */
-function normTime(s){s=String(s||'').trim().toLowerCase();const m=s.match(/^(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?$/)||s.match(/^(\d{2})(\d{2})$/);if(!m)return null;
-  let h=+m[1],mi=+(m[2]||0);if(m[3]==='pm'&&h<12)h+=12;if(m[3]==='am'&&h===12)h=0;if(h>23||mi>59)return null;return `${pad(h)}:${pad(mi)}`}
-function dayOf(s){s=String(s||'').trim().toLowerCase();if(/^[1-7]$/.test(s))return +s%7;const i=['sun','mon','tue','wed','thu','fri','sat'].indexOf(s.slice(0,3));return i}
-function importClasses(txt){
-  const rows=txt.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>l.split(/\t|;|,/).map(c=>c.trim().replace(/^"|"$/g,'')));
-  if(!rows.length)return{added:0,skipped:0};
-  let cols={day:0,start:1,end:2,subject:3,room:4};
-  const head=rows[0].map(c=>c.toLowerCase());
-  if(head.some(c=>c==='day'||c==='subject')){rows.shift();const f=n=>head.findIndex(c=>c.startsWith(n));cols={day:f('day'),start:f('start'),end:f('end'),subject:f('subj'),room:f('room')}}
-  let added=0,skipped=0;
-  for(const r of rows){
-    const d=dayOf(r[cols.day]),s=normTime(r[cols.start]),e=normTime(r[cols.end]),name=(r[cols.subject]||'').trim();
-    if(d<0||!s||!e||!name||toMin(e)<=toMin(s)){skipped++;continue}
-    let sj=S.subjects.find(x=>x.name.toLowerCase()===name.toLowerCase());
-    if(!sj){sj={id:uid(),name,color:PALETTE[S.subjects.length%PALETTE.length]};S.subjects.push(sj)}
-    const room=cols.room>=0?(r[cols.room]||''):'';
-    const same=S.classes.find(c=>c.subject===sj.id&&c.start===s&&c.end===e&&(c.room||'')===room);
-    if(same){if(!same.dow.includes(d))same.dow.push(d)}else S.classes.push({id:uid(),subject:sj.id,dow:[d],start:s,end:e,room});
-    added++;
+/* ---- Reading spreadsheets ---- */
+function parseDelimited(txt){
+  txt=String(txt||'').replace(/^﻿/,'');
+  const first=txt.split(/\r?\n/)[0]||'';
+  const delim=first.split('\t').length>1?'\t':(first.split(';').length>first.split(',').length?';':',');
+  const rows=[];let row=[],cell='',q=false;
+  for(let i=0;i<txt.length;i++){
+    const ch=txt[i];
+    if(q){if(ch==='"'){if(txt[i+1]==='"'){cell+='"';i++}else q=false}else cell+=ch;continue}
+    if(ch==='"'&&cell===''){q=true;continue}
+    if(ch===delim){row.push(cell);cell='';continue}
+    if(ch==='\n'||ch==='\r'){if(ch==='\r'&&txt[i+1]==='\n')i++;row.push(cell);rows.push(row);row=[];cell='';continue}
+    cell+=ch;
   }
-  return{added,skipped};
+  if(cell!==''||row.length){row.push(cell);rows.push(row)}
+  return rows.map(r=>r.map(c=>String(c).trim()));
 }
+function loadXLSX(){return window.XLSX?Promise.resolve():new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';s.onload=res;s.onerror=()=>rej(new Error('load'));document.head.appendChild(s)})}
+async function sheetsFromWorkbook(buf){
+  await loadXLSX();
+  const wb=window.XLSX.read(buf,{type:'array'});
+  return wb.SheetNames.map(n=>{
+    const ws=wb.Sheets[n];const rows=window.XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''}).map(r=>r.map(c=>String(c??'').trim()));
+    for(const m of ws['!merges']||[]){const v=(rows[m.s.r]||[])[m.s.c];if(!v)continue;for(let r=m.s.r;r<=m.e.r;r++){rows[r]=rows[r]||[];for(let c=m.s.c;c<=m.e.c;c++)if(!rows[r][c])rows[r][c]=v}}
+    return {name:n,rows};
+  });
+}
+async function fetchGoogleSheet(url){
+  const id=(url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)||[])[1];
+  if(!id)throw new Error('link');
+  const gid=(url.match(/[#&?]gid=(\d+)/)||[])[1];
+  const tries=[
+    `https://docs.google.com/spreadsheets/d/${id}/export?format=csv${gid?`&gid=${gid}`:''}`,
+    `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&headers=0${gid?`&gid=${gid}`:''}`];
+  for(const u of tries){
+    try{const r=await fetch(u);if(!r.ok)continue;const t=await r.text();if(/<html/i.test(t.slice(0,300)))continue;return parseDelimited(t)}catch(e){}
+  }
+  throw new Error('access');
+}
+
+/* ---- Understanding a timetable in any layout ---- */
+const DAYNAMES=['sun','mon','tue','wed','thu','fri','sat'];
+function dayIdx(t){const m=String(t??'').trim().toLowerCase().match(/^(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?$/);return m?DAYNAMES.indexOf(m[1]):-1}
+const TRE=/(\d{1,2})[:.](\d{2})\s*([ap]\.?\s?m\.?)?/gi;
+function timesIn(t){const out=[];let m;const re=new RegExp(TRE.source,'gi');while((m=re.exec(String(t??''))))out.push({h:+m[1],m:+m[2],ap:m[3]?m[3].toLowerCase()[0]:''});return out.filter(x=>x.h<24&&x.m<60)}
+function toMins(x){let h=x.h;if(x.ap==='p'&&h<12)h+=12;if(x.ap==='a'&&h===12)h=0;if(!x.ap&&h<7)h+=12;return h*60+x.m}
+function rangeIn(t){const ts=timesIn(t);if(!ts.length)return null;const s=toMins(ts[0]);let e=ts[1]?toMins(ts[1]):null;if(e!==null&&e<=s)e=null;return{s,e}}
+const isTimeish=c=>timesIn(c).length>0&&String(c).replace(new RegExp(TRE.source,'gi'),'').replace(/[\s\-–—:to()|,.]/gi,'').replace(/^(period|p|lesson|l)?\d*/i,'').length<3;
+const SKIPCELL=/^(short |long |lunch |snack )?(break|lunch|recess|snack|free|free period|study period|self study|zero period|dispersal|assembly)( break)?$/i;
+function parseCell(t){
+  const lines=String(t??'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  if(!lines.length)return null;
+  let first=lines[0];
+  if(SKIPCELL.test(first)||/^[-–—x.\/]+$/i.test(first)||/^(n\/?a|nil|none)$/i.test(first))return null;
+  if(isTimeish(first)||dayIdx(first)>=0)return null;
+  let room='';
+  const m=first.match(/^(.*?)\s*[\(\[]\s*(.+?)\s*[\)\]]\s*$/)||first.match(/^(.*?)\s+[-–—,\/@|]\s*((?:rm|room|lab|hall|class|r)\b.*|\d{1,3}[a-z]?)$/i);
+  if(m&&m[1].trim()){first=m[1].trim();room=m[2].trim()}
+  if(!room&&lines.length>1)room=lines.slice(1).find(l=>/\b(rm|room|lab|hall)\b/i.test(l)||/^[A-Z]?-?\d{1,3}[A-Z]?$/i.test(l))||'';
+  const subject=first.replace(/\s+/g,' ').trim();
+  if(!subject||/^\d+$/.test(subject)||subject.length>40)return null;
+  return {subject,room};
+}
+function fillEnds(list){for(let i=0;i<list.length;i++){const x=list[i];if(!x||x.e!=null)continue;const nx=list.slice(i+1).find(y=>y&&y.s>x.s);x.e=nx?nx.s:x.s+45}}
+function analyseRowsFmt(rows){
+  const out=[];
+  for(const r of rows){
+    const di=r.findIndex(c=>dayIdx(c)>=0);if(di<0)continue;
+    let rg=null;const used=new Set([di]);
+    r.forEach((c,i)=>{if(used.has(i)||!isTimeish(c))return;const x=rangeIn(c);if(!x)return;if(!rg){rg={...x};used.add(i)}else if(rg.e==null){rg.e=x.s;used.add(i)}});
+    if(!rg)continue;
+    const rest=r.filter((c,i)=>!used.has(i)&&c&&!/^\d+$/.test(c));
+    const cell=rest.length?parseCell(rest[0]):null;if(!cell)continue;
+    if(!cell.room&&rest[1]&&rest[1].length<20)cell.room=rest[1];
+    out.push({dow:dayIdx(r[di]),s:rg.s,e:rg.e,...cell});
+  }
+  const byDay={};out.forEach(x=>(byDay[x.dow]=byDay[x.dow]||[]).push(x));
+  Object.values(byDay).forEach(l=>{l.sort((a,b)=>a.s-b.s);fillEnds(l)});
+  return out;
+}
+function analyseAcross(rows){
+  let best=[];
+  for(let h=0;h<Math.min(rows.length,20);h++){
+    const dc={};(rows[h]||[]).forEach((c,i)=>{const d=dayIdx(c);if(d>=0)dc[i]=d});
+    if(Object.keys(dc).length<2)continue;
+    const tr=[];
+    for(let r=h+1;r<rows.length;r++){
+      const row=rows[r]||[];
+      if(Object.keys(dc).filter(i=>dayIdx(row[i])>=0).length>=2)break;
+      const tcell=row.filter((c,i)=>!(i in dc)&&isTimeish(c)).join(' – ');
+      const rg=rangeIn(tcell);tr.push(rg?{r,...rg}:null);
+    }
+    fillEnds(tr);
+    const out=[];
+    for(const x of tr){if(!x)continue;for(const i in dc){const cell=parseCell((rows[x.r]||[])[i]);if(cell)out.push({dow:dc[i],s:x.s,e:x.e,...cell})}}
+    if(out.length>best.length)best=out;
+  }
+  return best;
+}
+function analyseDown(rows){
+  let best=[];const width=Math.max(0,...rows.map(r=>r.length));
+  for(let c=0;c<Math.min(width,4);c++){
+    const dr=rows.map((r,i)=>[i,dayIdx((r||[])[c])]).filter(x=>x[1]>=0);
+    if(dr.length<2)continue;
+    let hr=-1,bn=0;
+    for(let r=Math.max(0,dr[0][0]-8);r<dr[0][0];r++){const n=(rows[r]||[]).filter((x,i)=>i!==c&&isTimeish(x)).length;if(n>bn){bn=n;hr=r}}
+    if(hr<0)continue;
+    const cols=(rows[hr]||[]).map((x,i)=>i!==c&&isTimeish(x)?{i,...rangeIn(x)}:null);
+    const list=cols.filter(Boolean);fillEnds(list);
+    const out=[];
+    for(const[ri,d] of dr)for(const col of list){const cell=parseCell((rows[ri]||[])[col.i]);if(cell)out.push({dow:d,s:col.s,e:col.e,...cell})}
+    if(out.length>best.length)best=out;
+  }
+  return best;
+}
+function analyseTimetable(rows){
+  rows=(rows||[]).filter(r=>Array.isArray(r));
+  const cands=[['rows',analyseRowsFmt(rows)],['across',analyseAcross(rows)],['down',analyseDown(rows)]].sort((a,b)=>b[1].length-a[1].length);
+  let list=cands[0][1].filter(x=>x.e>x.s);
+  list.sort((a,b)=>a.dow-b.dow||a.s-b.s);
+  const merged=[];
+  for(const x of list){
+    const p=merged[merged.length-1];
+    if(p&&p.dow===x.dow&&p.subject.toLowerCase()===x.subject.toLowerCase()&&(p.room||'')===(x.room||'')&&x.s-p.e<=10&&x.s>=p.s){p.e=Math.max(p.e,x.e);continue}
+    if(p&&p.dow===x.dow&&p.s===x.s&&p.subject===x.subject)continue;
+    merged.push({...x});
+  }
+  return {layout:cands[0][0],classes:merged};
+}
+const ALIASES=[['mathematics','maths','math','mat'],['physics','phy','phys'],['chemistry','chem','che'],['biology','bio'],['english','eng','english language','english literature','eng lit','literature'],['history','hist'],['geography','geo','geog'],['computer science','computers','comp sci','cs','ict','computing','computer'],['economics','eco','econ'],['physical education','pe','games','sports'],['business studies','business','bst'],['accountancy','accounts','acc'],['social studies','sst','social science'],['environmental science','evs','environment'],['french','fr'],['hindi','hin'],['spanish','span'],['art','arts','art and design'],['music','mus']];
+function matchSubject(name){
+  const n=name.toLowerCase().replace(/[^a-z ]/g,'').replace(/\s+/g,' ').trim();
+  const exact=S.subjects.find(s=>s.name.toLowerCase()===n);if(exact)return exact;
+  const grp=ALIASES.find(g=>g.includes(n)||g.some(a=>a.length>3&&n.startsWith(a)));
+  if(grp){const s=S.subjects.find(s=>grp.includes(s.name.toLowerCase()));if(s)return s}
+  if(n.length>=4){const s=S.subjects.find(s=>s.name.toLowerCase().startsWith(n)||n.startsWith(s.name.toLowerCase()));if(s)return s}
+  return null;
+}
+function prettyName(name){const n=name.replace(/\s+/g,' ').trim();const k=n.toLowerCase().replace(/[^a-z ]/g,'').trim();const grp=ALIASES.find(g=>g.includes(k));const base=grp?grp[0]:n;return base.length<=3&&!grp?base.toUpperCase():base.replace(/\b\w/g,c=>c.toUpperCase())}
+function buildPreview(found,source){
+  const subjects={};
+  for(const c of found.classes){const k=c.subject.toLowerCase();if(!subjects[k]){const m=matchSubject(c.subject);subjects[k]={raw:c.subject,match:m,name:m?m.name:prettyName(c.subject),count:0}}subjects[k].count++}
+  ui.preview={source,layout:found.layout,classes:found.classes,subjects};
+}
+function applyPreview(mode){
+  const p=ui.preview;if(!p)return;
+  if(mode==='replace')S.classes=[];
+  const idFor={};
+  for(const k in p.subjects){const s=p.subjects[k];let sj=s.match||S.subjects.find(x=>x.name.toLowerCase()===s.name.toLowerCase());
+    if(!sj){sj={id:uid(),name:s.name,color:PALETTE[S.subjects.length%PALETTE.length]};S.subjects.push(sj)}idFor[k]=sj.id}
+  for(const c of p.classes){
+    const sid=idFor[c.subject.toLowerCase()],st=fromMin(c.s),en=fromMin(c.e);
+    const same=S.classes.find(x=>x.subject===sid&&x.start===st&&x.end===en&&(x.room||'')===(c.room||''));
+    if(same){if(!same.dow.includes(c.dow))same.dow.push(c.dow)}else S.classes.push({id:uid(),subject:sid,dow:[c.dow],start:st,end:en,room:c.room||''});
+  }
+  const n=p.classes.length;ui.preview=null;touch();
+  ui.flash=`imp:Added ${n} ${n===1?'class':'classes'} to your timetable. Free time has been worked out from it.`;
+}
+async function runImport(kind,payload){
+  const msg=t=>{ui.impMsg=t;ui.impBusy=false;render()};
+  ui.impBusy=true;ui.impMsg='';render();
+  try{
+    let sheets=[];
+    if(kind==='link')sheets=[{name:'Sheet',rows:await fetchGoogleSheet(payload)}];
+    else if(kind==='paste')sheets=[{name:'Pasted cells',rows:parseDelimited(payload)}];
+    else if(kind==='file'){
+      const f=payload;
+      if(/\.(xlsx|xlsm|xls|ods)$/i.test(f.name))sheets=await sheetsFromWorkbook(await f.arrayBuffer());
+      else sheets=[{name:f.name,rows:parseDelimited(await f.text())}];
+    }
+    let best=null;
+    for(const sh of sheets){const r=analyseTimetable(sh.rows);if(!best||r.classes.length>best.r.classes.length)best={sh,r}}
+    if(!best||!best.r.classes.length)return msg('No classes could be found. The sheet needs day names (Mon, Tuesday…) and class times such as 08:00–08:45. Any layout works.');
+    buildPreview(best.r,kind==='file'?payload.name+(sheets.length>1?` · ${best.sh.name}`:''):kind==='link'?'Google Sheet':'Pasted cells');
+    ui.impBusy=false;ui.impMsg='';render();
+    $('#previewSec')?.scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(err){
+    if(err&&err.message==='link')return msg('That does not look like a Google Sheets link. Copy the address from the browser while the sheet is open.');
+    if(err&&err.message==='access')return msg('Could not open that sheet. In Google Sheets, click Share, set General access to “Anyone with the link”, then try again. Or copy the cells and use Paste.');
+    if(err&&err.message==='load')return msg('Could not load the spreadsheet reader. Check your connection, or export the sheet as CSV.');
+    return msg('That file could not be read. Try exporting it as .xlsx or .csv.');
+  }
+}
+
+/* ---- Study hours ---- */
+function hoursSummary(dow){const d=nextDateFor(dow);const w=availGeneric(d);return{w,tot:w.reduce((a,[x,y])=>a+y-x,0)}}
+function nextDateFor(dow){const t=today();return iso(addDays(t,(dow-t.getDay()+7)%7))}
+function availGeneric(day){let iv=freeWindows(day,true);for(const c of classesOn(day,true))iv=subIv(iv,toMin(c.start),toMin(c.end));for(const e of S.events)if(Array.isArray(e.dow)&&e.dow.includes(parse(day).getDay()))iv=subIv(iv,toMin(e.start)-GAP,toMin(e.end)+GAP);return iv.filter(([a,b])=>b-a>=10)}
+
 function vTimetable(){
-  const cls=[...S.classes].sort((a,b)=>Math.min(...a.dow.map(d=>(d+6)%7))-Math.min(...b.dow.map(d=>(d+6)%7))||toMin(a.start)-toMin(b.start));
   const clsMin=S.classes.reduce((a,c)=>a+c.dow.length*(toMin(c.end)-toMin(c.start)),0);
-  return `<div class="phead"><div><h1>Timetable</h1><div class="sub">Your classes and the hours you're free. Quire plans study only inside free time and never over a class.</div></div>
-    <dl class="overview num"><div><dt>Class time per week</dt><dd>${fmtH(clsMin)}</dd></div><div><dt>Free time per week</dt><dd>${fmtH(freeMinsWeek())}</dd></div></dl></div>
+  const st=S.settings;
+  const days=WEEK.filter(d=>d>=1&&d<=5||S.classes.some(c=>c.dow.includes(d)));
+  const shown=days.length<7?[...days,...WEEK.filter(d=>!days.includes(d))]:days;
+  const weekFree=WEEK.reduce((a,d)=>a+hoursSummary(d).tot,0);
+  const R=gridRange();
+  const cols=shown.map(d=>{const day=nextDateFor(d);return{head:`<b>${DOWL[d]}</b><span class="num" style="font-size:12px;color:var(--slate)">${fmtMin(hoursSummary(d).tot)} free</span>`,
+    shade:availGeneric(day),
+    items:S.classes.filter(c=>c.dow.includes(d)).map(c=>({key:`tt|${c.id}|${d}`,s:toMin(c.start),e:toMin(c.end),color:sub(c.subject).color,cls:'class',label:c.room||'Class',title:sub(c.subject).name,sub:`${c.start}–${c.end}`}))
+      .concat(S.events.filter(e=>Array.isArray(e.dow)&&e.dow.includes(d)).map(e=>({key:`ttev|${e.id}|${d}`,s:toMin(e.start),e:toMin(e.end),color:'var(--personal)',cls:'personal',label:'Every week',title:e.title,sub:`${e.start}–${e.end}`})))}});
+  let sel='';
+  if(ui.selEvent&&/^tt/.test(ui.selEvent)){const[k,id,d]=ui.selEvent.split('|');
+    if(k==='tt'){const c=S.classes.find(x=>x.id===id);if(c)sel=`<div class="evdetail"><div><span class="kind">Class · ${c.dow.map(x=>DOW[x]).join(', ')}</span><h3>${esc(sub(c.subject).name)}</h3><div class="muted num" style="font-size:13px">${c.start}–${c.end}${c.room?' · '+esc(c.room):''}</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${c.dow.length>1?`<button class="btn sec2 sm" data-act="del-class-day" data-id="${c.id}" data-d="${d}">Remove ${DOWL[+d]} only</button>`:''}<button class="btn danger sm" data-act="del-class" data-id="${c.id}">Delete class</button><button class="btn sec2 sm" data-act="sel-ev" data-key="">Close</button></div></div>`}
+    else{const e=S.events.find(x=>x.id===id);if(e)sel=`<div class="evdetail"><div><span class="kind personal">Every ${e.dow.map(x=>DOWL[x]).join(', ')}</span><h3>${esc(e.title)}</h3><div class="muted num" style="font-size:13px">${e.start}–${e.end}</div></div><div style="display:flex;gap:8px"><button class="btn danger sm" data-act="del-ev" data-id="${e.id}">Delete</button><button class="btn sec2 sm" data-act="sel-ev" data-key="">Close</button></div></div>`}}
+  const P=ui.preview;
+  const impTab=ui.impTab;
+  const flash=ui.flash&&ui.flash.startsWith('imp:')?ui.flash.slice(4):'';
+  return `<div class="phead"><div><h1>Timetable</h1><div class="sub">Import your classes once. Free time to study is worked out from them automatically.</div></div>
+    <dl class="overview num"><div><dt>Classes per week</dt><dd>${fmtH(clsMin)}</dd></div><div><dt>Free to study per week</dt><dd>${fmtH(weekFree)}</dd></div></dl></div>
 
   <section class="sec" style="border:0">
-    <div class="sh"><h2>Upload your classes</h2></div>
-    <div class="drop" id="drop">
-      <div style="min-width:0;flex:1 1 320px"><b style="font-weight:500">Drop a CSV file here, or choose one.</b>
-        <div class="muted" style="font-size:12.5px;margin-top:3px">Columns: <code class="fmt">Day, Start, End, Subject, Room</code>. Export from Excel or Google Sheets as CSV. <a href="timetable-template.csv" download>Download a template</a>.</div></div>
-      <label class="btn sec2" style="position:relative;overflow:hidden">${ic('up')}Choose file<input type="file" id="clsFile" accept=".csv,.tsv,.txt,text/csv" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label>
-    </div>
-    <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:13px">Or paste your timetable as text</summary>
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px"><textarea class="in" id="clsPaste" rows="5" placeholder="Mon, 08:00, 08:45, Mathematics, Room 12&#10;Mon, 08:45, 09:30, Physics, Lab 2"></textarea>
-      <div><button class="btn sec2" data-act="paste-classes">Add these classes</button></div></div></details>
-    <div id="clsMsg" class="ok" style="margin-top:8px">${ui.flash&&ui.flash.startsWith('cls:')?esc(ui.flash.slice(4)):''}</div>
+    <div class="sh"><h2>Import your timetable</h2><span class="aside">Any layout: days across the top, days down the side, or one class per row</span></div>
+    <div class="seg" role="tablist" style="margin-bottom:12px">${[['link','Google Sheets link'],['file','Upload file'],['paste','Paste cells']].map(([k,l])=>`<button type="button" role="tab" aria-selected="${impTab===k}" data-act="imptab" data-t="${k}" class="${impTab===k?'on':''}">${l}</button>`).join('')}</div>
+    ${impTab==='link'?`<form class="toolbar" id="impLink" style="padding:0"><label class="field q"><span>Link to your Google Sheet</span><input class="in" id="imp-url" type="url" required placeholder="https://docs.google.com/spreadsheets/d/…" value="${esc(ui.impUrl||'')}"></label><button class="btn" type="submit" ${ui.impBusy?'disabled':''}>${ui.impBusy?'Reading…':'Read timetable'}</button></form>
+      <p class="muted" style="font-size:12.5px;margin:8px 0 0">In Google Sheets, click <b>Share</b> and set General access to <b>Anyone with the link · Viewer</b>. If the timetable is on a second tab, open that tab before copying the link.</p>`
+    :impTab==='file'?`<div class="drop" id="drop"><div style="min-width:0;flex:1 1 300px"><b style="font-weight:500">Drop your timetable here, or choose a file.</b>
+      <div class="muted" style="font-size:12.5px;margin-top:3px">Excel (.xlsx), Google Sheets download, or CSV. Every tab is checked. <a href="timetable-template.csv" download>Example file</a></div></div>
+      <label class="btn sec2" style="position:relative;overflow:hidden">${ic('up')}${ui.impBusy?'Reading…':'Choose file'}<input type="file" id="clsFile" accept=".xlsx,.xls,.ods,.csv,.tsv,.txt" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label></div>`
+    :`<div style="display:flex;flex-direction:column;gap:8px"><label class="field"><span>In Google Sheets, select your whole timetable, copy it (Ctrl+C or ⌘C) and paste it here</span><textarea class="in" id="clsPaste" rows="6" style="font-family:var(--sans);font-size:13px" placeholder="Paste here"></textarea></label><div><button class="btn" data-act="imp-paste" ${ui.impBusy?'disabled':''}>${ui.impBusy?'Reading…':'Read timetable'}</button></div></div>`}
+    ${ui.impMsg?`<div class="warn" style="margin-top:12px;border:0"><span>${esc(ui.impMsg)}</span></div>`:''}
+    ${flash?`<div class="ok" style="margin-top:10px">${esc(flash)}</div>`:''}
   </section>
 
+  ${P?`<section class="sec" id="previewSec">
+    <div class="sh"><h2>Check what was found</h2><span class="aside">${esc(P.source)} · ${{rows:'one class per row',across:'days across the top',down:'days down the side'}[P.layout]}</span></div>
+    <p style="margin:0 0 10px;font-size:13.5px"><b class="num" style="font-weight:500">${P.classes.length} classes</b> on ${[...new Set(P.classes.map(c=>c.dow))].sort((a,b)=>(a+6)%7-(b+6)%7).map(d=>DOW[d]).join(', ')}, from ${fromMin(Math.min(...P.classes.map(c=>c.s)))} to ${fromMin(Math.max(...P.classes.map(c=>c.e)))}. Double periods have been joined. Breaks and lunch are left out.</p>
+    <div class="tw" style="border-top:0;margin-bottom:12px"><table><thead><tr><th>In your sheet</th><th>Becomes</th><th class="r">Classes</th></tr></thead><tbody>
+      ${Object.values(P.subjects).map(s=>`<tr><td>${esc(s.raw)}</td><td>${s.match?subjMark(s.match.id):`<span class="subj"><i style="background:var(--line-strong)"></i>${esc(s.name)}</span> <span class="kind" style="margin-left:6px">New subject</span>`}</td><td class="r num">${s.count}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="calwrap"><div style="min-width:${52+[...new Set(P.classes.map(c=>c.dow))].length*96}px">${timeGrid({cols:WEEK.filter(d=>P.classes.some(c=>c.dow===d)).map(d=>({head:`<b>${DOW[d]}</b>`,items:P.classes.filter(c=>c.dow===d).map((c,i)=>({key:'pv|'+i,s:c.s,e:c.e,color:(P.subjects[c.subject.toLowerCase()].match||{}).color||'var(--slate)',cls:'class',label:c.room||'',title:P.subjects[c.subject.toLowerCase()].name,sub:`${fromMin(c.s)}–${fromMin(c.e)}`}))})),H0:Math.floor(Math.min(...P.classes.map(c=>c.s))/60),H1:Math.ceil(Math.max(...P.classes.map(c=>c.e))/60),HH:40,minW:96,inert:true})}</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;padding:14px 0">${S.classes.length?`<button class="btn" data-act="pv-apply" data-m="replace">Replace my timetable</button><button class="btn sec2" data-act="pv-apply" data-m="add">Add to my timetable</button>`:`<button class="btn" data-act="pv-apply" data-m="replace">Use this timetable</button>`}<button class="btn ghost" data-act="pv-cancel">Discard</button></div>
+  </section>`:''}
+
   <section class="sec">
-    <div class="sh"><h2>Classes</h2><span class="aside num">${S.classes.length} ${S.classes.length===1?'entry':'entries'}</span></div>
+    <div class="sh"><h2>Your week</h2><span class="aside">Shaded = free to study · tap a class to change it</span></div>
+    ${sel}
+    <div class="calwrap" id="calwrap">${timeGrid({cols,H0:R.H0,H1:R.H1,HH:40,minW:104})}</div>
+    <details style="margin-top:12px" ${S.classes.length?'':'open'}><summary style="cursor:pointer;font-size:13px;color:var(--link)">Add a class by hand</summary>
     <form class="form cls" id="clsForm" autocomplete="off">
       <label class="field f-title"><span>Subject</span><select class="in" id="cf-sub">${S.subjects.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
       <div class="field f-days"><span>Days</span>${dayPicker('cls',ui.pick.cls)}</div>
@@ -525,42 +726,21 @@ function vTimetable(){
       <label class="field"><span>End</span><input class="in num" type="time" id="cf-e" required value="08:45"></label>
       <label class="field"><span>Room</span><input class="in" id="cf-room" placeholder="Optional"></label>
       <div class="acts"><button class="btn" type="submit">Add class</button></div>
-    </form>
-    ${cls.length?`<div class="tw" style="margin-top:12px"><table><thead><tr><th>Days</th><th>Time</th><th>Subject</th><th class="hide-sm">Room</th><th></th></tr></thead><tbody>
-      ${cls.map(c=>`<tr><td>${[...c.dow].sort((a,b)=>(a+6)%7-(b+6)%7).map(d=>DOW[d]).join(', ')}</td><td class="num">${c.start}–${c.end}</td><td>${subjMark(c.subject)}</td><td class="hide-sm muted">${esc(c.room||'')}</td>
-      <td class="r"><span class="rowact"><button class="icon" data-act="del-class" data-id="${c.id}" aria-label="Delete">${ic('del')}</button></span></td></tr>`).join('')}</tbody></table></div>
-      <div style="padding:10px 0">${ui.confirm==='clear-classes'?'<button class="btn danger sm" data-act="do-clear-classes">Confirm: remove all classes</button> <button class="btn sec2 sm" data-act="confirm" data-c="">Cancel</button>':'<button class="btn ghost sm" style="padding:0" data-act="confirm" data-c="clear-classes">Remove all classes</button>'}</div>`
-      :'<div class="empty">No classes yet. Upload a file or add them above.</div>'}
+    </form><div id="clsMsg" class="ok"></div></details>
+    ${S.classes.length?`<div style="padding:10px 0 0">${ui.confirm==='clear-classes'?'<button class="btn danger sm" data-act="do-clear-classes">Confirm: remove all classes</button> <button class="btn sec2 sm" data-act="confirm" data-c="">Cancel</button>':'<button class="btn ghost sm" style="padding:0" data-act="confirm" data-c="clear-classes">Remove all classes</button>'}</div>`:''}
   </section>
 
   <section class="sec">
-    <div class="sh"><h2>When you're free to study</h2><span class="aside">${S.freeDefault?'These are starting suggestions. Change them to match your week.':'Study is only planned in these windows'}</span></div>
-    <form class="form fr" id="freeForm" autocomplete="off">
-      <div class="field f-days"><span>Days</span>${dayPicker('free',ui.pick.free)}</div>
-      <label class="field"><span>From</span><input class="in num" type="time" id="ff-s" required value="16:00"></label>
-      <label class="field"><span>To</span><input class="in num" type="time" id="ff-e" required value="19:00"></label>
-      <div class="acts"><button class="btn" type="submit">Add free time</button></div>
+    <div class="sh"><h2>How your free time is worked out</h2>${ui.flash==='hours'?'<span class="ok">Saved. Free time and the plan have been updated.</span>':''}</div>
+    <form id="hoursForm" class="hours-rules" autocomplete="off">
+      <p>On school days, study time starts when your last class ends, plus <input class="in num inl" type="number" id="hr-travel" min="0" max="180" step="5" value="${st.travel}"> min to get home.</p>
+      <p>On days without classes, start at <input class="in num inl" type="time" id="hr-start" value="${st.dayStart}">, with lunch at <input class="in num inl" type="time" id="hr-lunch" value="${st.lunch}">.</p>
+      <p>Stop studying by <input class="in num inl" type="time" id="hr-end" value="${st.dayEnd}">. Dinner at <input class="in num inl" type="time" id="hr-dinner" value="${st.dinner}"> for <input class="in num inl" type="number" id="hr-dmin" min="0" max="120" step="5" value="${st.dinnerMin}"> min.</p>
+      <p class="muted" style="font-size:12.5px">Events you add to the calendar, and tests, are taken out of free time on their day.</p>
+      <div><button class="btn" type="submit">Save</button></div>
     </form>
-    <div class="tw" style="margin-top:12px"><table><thead><tr><th>Day</th><th>Free windows</th><th class="r">Total</th></tr></thead><tbody>
-      ${WEEK.map(d=>{const w=S.free.filter(f=>f.dow===d).sort((a,b)=>toMin(a.start)-toMin(b.start));const tot=w.reduce((a,f)=>a+toMin(f.end)-toMin(f.start),0);
-        return `<tr><td style="width:110px">${DOWL[d]}</td><td><div class="chips">${w.map(f=>`<span class="chip num">${f.start}–${f.end}<button type="button" data-act="del-free" data-id="${f.id}" aria-label="Remove ${f.start} to ${f.end}">×</button></span>`).join('')||'<span class="muted">Not free</span>'}</div></td><td class="r num muted">${tot?fmtMin(tot):'–'}</td></tr>`}).join('')}
-    </tbody></table></div>
-    <p class="muted" style="font-size:12.5px;margin:10px 0 0">Classes, tests and personal commitments inside a free window are worked around automatically.</p>
-  </section>
-
-  <section class="sec">
-    <div class="sh"><h2>Other commitments</h2><span class="aside">Sport, tuition, family time</span></div>
-    <form class="form fr" id="commitForm" autocomplete="off" style="grid-template-columns:minmax(0,1.4fr) auto repeat(2,minmax(0,120px)) auto">
-      <label class="field f-title"><span>What</span><input class="in" id="kf-title" required placeholder="e.g. Badminton practice"></label>
-      <div class="field f-days"><span>Every</span>${dayPicker('commit',ui.pick.commit)}</div>
-      <label class="field"><span>From</span><input class="in num" type="time" id="kf-s" required value="17:00"></label>
-      <label class="field"><span>To</span><input class="in num" type="time" id="kf-e" required value="18:00"></label>
-      <div class="acts"><button class="btn" type="submit">Add</button></div>
-    </form>
-    ${S.events.filter(e=>e.dow).map(e=>`<div class="lrow" style="grid-template-columns:150px minmax(0,1fr) auto"><span class="tm num">${e.dow.map(d=>DOW[d]).join(', ')} · ${e.start}</span><span class="tt">${esc(e.title)}<small class="num">${e.start}–${e.end}</small></span><button class="icon" data-act="del-ev" data-id="${e.id}" aria-label="Delete">${ic('del')}</button></div>`).join('')}
   </section>`;
 }
-
 /* =========================================================
    Homework
    ========================================================= */
@@ -647,69 +827,110 @@ function vTests(){
 /* =========================================================
    Calendar
    ========================================================= */
-const H0=6,H1=23,HH=46;
-function layoutDay(evs){
-  const ev=evs.filter(e=>!e.allDay).map(e=>({...e,s:Math.max(toMin(e.start),H0*60),e2:Math.min(toMin(e.end),H1*60)})).filter(e=>e.e2>e.s).sort((a,b)=>a.s-b.s||b.e2-a.e2);
+function gridRange(){
+  const starts=S.classes.map(c=>toMin(c.start));
+  const H0=Math.max(5,Math.min(7,Math.floor((starts.length?Math.min(...starts):8*60)/60)));
+  const H1=Math.min(24,Math.max(22,Math.ceil(toMin(S.settings.dayEnd)/60)+1));
+  return{H0,H1};
+}
+function layoutCol(items,H0,H1){
+  const ev=items.map(e=>({...e,s2:Math.max(e.s,H0*60),e2:Math.min(e.e,H1*60)})).filter(e=>e.e2>e.s2).sort((a,b)=>a.s2-b.s2||b.e2-a.e2);
   let cluster=[],cEnd=-1;const out=[];
-  const flush=()=>{const lanes=[];for(const e of cluster){let i=lanes.findIndex(end=>end<=e.s);if(i<0){i=lanes.length;lanes.push(0)}lanes[i]=e.e2;e.lane=i}cluster.forEach(e=>{e.n=lanes.length;out.push(e)});cluster=[]};
-  for(const e of ev){if(e.s>=cEnd&&cluster.length)flush();cluster.push(e);cEnd=Math.max(cEnd,e.e2)}
+  const flush=()=>{const lanes=[];for(const e of cluster){let i=lanes.findIndex(end=>end<=e.s2);if(i<0){i=lanes.length;lanes.push(0)}lanes[i]=e.e2;e.lane=i}cluster.forEach(e=>{e.n=lanes.length;out.push(e)});cluster=[]};
+  for(const e of ev){if(e.s2>=cEnd&&cluster.length)flush();cluster.push(e);cEnd=Math.max(cEnd,e.e2)}
   if(cluster.length)flush();return out;
 }
-function evColor(e){if(e.src==='plan')return planColor(e);return e.kind==='test'?'var(--red)':e.kind==='personal'?'var(--personal)':e.subject?sub(e.subject).color:'var(--school)'}
-function vCalendar(){
-  const ws=weekStart(addDays(today(),ui.week*7)),T=TD(),we=addDays(ws,6);
-  const days=[...Array(7)].map((_,i)=>iso(addDays(ws,i)));
-  const range=ws.getMonth()===we.getMonth()?`${ws.getDate()}–${we.getDate()} ${MONL[we.getMonth()]} ${we.getFullYear()}`:`${ws.getDate()} ${MON[ws.getMonth()]} – ${we.getDate()} ${MON[we.getMonth()]} ${we.getFullYear()}`;
-  const P=plan();
-  const planned=P.blocks.filter(b=>b.day>=days[0]&&b.day<=days[6]);
-  let g=`<div class="corner"></div>`;
-  days.forEach(d=>{const x=parse(d);g+=`<div class="dh ${d===T?'today':''}"><b>${DOW[x.getDay()]}</b><span class="num">${x.getDate()}</span></div>`});
-  g+=`<div class="corner2">All day</div>`;
-  days.forEach(d=>{const a=fixedOn(d).filter(e=>e.allDay);g+=`<div class="ad">${a.map(e=>`<div title="${esc(e.title)}">${esc(e.title)}</div>`).join('')}</div>`});
+/* cols: [{head, today, slot(iso), allDay:[{title,color}], shade:[[a,b]], items:[{key,s,e,color,cls,label,title,sub}]}] */
+function timeGrid({cols,H0,H1,HH,minW,wide,inert}){
+  const n=cols.length,nm=nowHM();
+  let g=`<div class="cal ${wide?'wide':''}" style="--hh:${HH}px;grid-template-columns:52px repeat(${n},minmax(${minW}px,1fr));min-width:${52+n*minW}px">`;
+  g+=`<div class="corner"></div>`+cols.map(c=>`<div class="dh ${c.today?'today':''}">${c.head}</div>`).join('');
+  if(cols.some(c=>c.allDay&&c.allDay.length))g+=`<div class="corner2">All day</div>`+cols.map(c=>`<div class="ad">${(c.allDay||[]).map(a=>`<button type="button" class="adi" data-act="sel-ev" data-key="${esc(a.key||'')}" style="border-left-color:${a.color}">${esc(a.title)}</button>`).join('')}</div>`).join('');
   g+=`<div class="hours">${[...Array(H1-H0)].map((_,i)=>`<div class="num">${i?pad(H0+i)+':00':''}</div>`).join('')}</div>`;
-  const nm=nowHM();
-  days.forEach(d=>{
-    g+=`<div class="day ${d===T?'today':''}" style="height:${(H1-H0)*HH}px">`;
-    for(const[a,b] of freeWindows(d)){const s=Math.max(a,H0*60),e=Math.min(b,H1*60);if(e>s)g+=`<div class="freebg" style="top:${(s-H0*60)/60*HH}px;height:${(e-s)/60*HH}px"></div>`}
-    const items=[...fixedOn(d),...planned.filter(b=>b.day===d).map(b=>({...b,src:'plan',id:b.key}))];
-    for(const e of layoutDay(items)){
-      const top=(e.s-H0*60)/60*HH,h=Math.max(18,(e.e2-e.s)/60*HH-2),w=100/e.n;
-      const key=e.src+'|'+e.id+'|'+d,lbl=e.src==='plan'?PLANL[e.kind]:KINDS[e.kind];
-      g+=`<button class="ev ${e.kind} ${e.src==='plan'?'plan':''} ${e.done?'done':''} ${ui.selEvent===key?'sel':''}" style="--c:${evColor(e)};top:${top}px;height:${h}px;left:calc(${e.lane*w}% + 2px);width:calc(${w}% - 4px)" data-act="sel-ev" data-key="${esc(key)}" title="${esc(e.title)} ${e.start}–${e.end}">
-        ${h>30?`<span class="k">${lbl}</span>`:''}<b>${esc(e.title)}</b>${h>50?`<small class="num">${e.start}–${e.end}${e.room?' · '+esc(e.room):''}</small>`:''}</button>`;
+  for(const c of cols){
+    g+=`<div class="day ${c.today?'today':''} ${c.slot?'slot':''}" style="height:${(H1-H0)*HH}px" ${c.slot?`data-slot="${c.slot}" data-h0="${H0}" data-hh="${HH}" title="Click an empty time to add an event"`:''}>`;
+    for(const[a,b] of c.shade||[]){const s=Math.max(a,H0*60),e=Math.min(b,H1*60);if(e>s)g+=`<div class="freebg" style="top:${(s-H0*60)/60*HH}px;height:${(e-s)/60*HH}px"></div>`}
+    for(const e of layoutCol(c.items||[],H0,H1)){
+      const top=(e.s2-H0*60)/60*HH,h=Math.max(16,(e.e2-e.s2)/60*HH-2),w=100/e.n;
+      g+=`<${inert?'div':'button type="button"'} class="ev ${e.cls||''} ${ui.selEvent===e.key?'sel':''}" style="--c:${e.color};top:${top}px;height:${h}px;left:calc(${e.lane*w}% + 2px);width:calc(${w}% - 4px)" ${inert?'':`data-act="sel-ev" data-key="${esc(e.key)}"`} title="${esc(e.title)} ${esc(e.sub||'')}">
+        ${h>=34&&e.label?`<span class="k">${esc(e.label)}</span>`:''}<b>${esc(e.title)}</b>${h>=(wide?30:50)&&e.sub?`<small class="num">${esc(e.sub)}</small>`:''}</${inert?'div':'button'}>`;
     }
-    if(d===T&&nm>=H0*60&&nm<=H1*60)g+=`<div class="nowline" style="top:${(nm-H0*60)/60*HH}px"></div>`;
+    if(c.today&&nm>=H0*60&&nm<=H1*60)g+=`<div class="nowline" style="top:${(nm-H0*60)/60*HH}px"></div>`;
     g+=`</div>`;
-  });
-  let detail='';
-  if(ui.selEvent){const[src,id,day]=ui.selEvent.split('|');
-    const e=src==='plan'?P.blocks.find(b=>b.key===id):fixedOn(day).find(x=>x.id===id&&x.src===src);
-    if(e){const lbl=src==='plan'?PLANL[e.kind]:KINDS[e.kind];
-      let acts='';
-      if(src==='plan')acts=e.done?`<button class="btn sec2 sm" data-act="block-undo" data-key="${esc(id)}">Mark not done</button>`:`<button class="btn sm" data-act="focus-block" data-key="${esc(id)}">${ic('play')}Start focus</button><button class="btn sec2 sm" data-act="block-done" data-key="${esc(id)}">Mark done</button>`;
-      else if(src==='test')acts='<a class="btn sec2 sm" href="#tests">Edit in Tests</a>';
-      else if(src==='class')acts='<a class="btn sec2 sm" href="#timetable">Edit timetable</a>';
-      else acts=`<button class="btn danger sm" data-act="del-ev" data-id="${id}">${e.dow?'Delete every week':'Delete'}</button>`;
-      detail=`<div class="evdetail"><div><span class="kind ${e.kind}">${lbl}${src==='plan'?' · planned automatically':''}</span><h3>${esc(e.title)}</h3>
-      <div class="muted num" style="font-size:13px">${fmtDate(day)} · ${e.allDay?'All day':e.start+'–'+e.end}${e.subject?' · '+esc(sub(e.subject).name):''}${e.room?' · '+esc(e.room):''}</div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">${acts}<button class="btn sec2 sm" data-act="sel-ev" data-key="">Close</button></div></div>`}}
-  const pm=planned.reduce((a,b)=>a+b.min,0);
-  return `<div class="phead"><div><h1>Calendar</h1><div class="sub">Classes and commitments, with study sessions planned into your free time (shaded). Tap a block for details.</div></div>
-    <dl class="overview num"><div><dt>Study planned this week</dt><dd>${fmtH(pm)}</dd></div><div><dt>Tests this week</dt><dd>${S.tests.filter(t=>t.date>=days[0]&&t.date<=days[6]).length}</dd></div></dl></div>
-  <div class="calbar"><div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap"><h2 class="num">${range}</h2>
-    <div class="nav2"><button class="btn sec2 sm" data-act="wk" data-d="-1" aria-label="Previous week">${ic('l')}</button><button class="btn sec2 sm" data-act="wk" data-d="0">This week</button><button class="btn sec2 sm" data-act="wk" data-d="1" aria-label="Next week">${ic('r')}</button></div></div>
-    <div class="legend"><span><i style="border-color:var(--school);background:color-mix(in srgb,var(--school) 13%,var(--surface))"></i>Class</span><span><i style="border-color:var(--blue);background:var(--surface);outline:1px solid color-mix(in srgb,var(--blue) 45%,transparent)"></i>Planned study</span><span><i style="border-color:var(--red);background:color-mix(in srgb,var(--red) 13%,var(--surface))"></i>Test</span><span><i style="border-color:var(--personal);background:color-mix(in srgb,var(--personal) 13%,var(--surface))"></i>Personal</span><span><i style="border-color:transparent;background:color-mix(in srgb,var(--blue) 10%,var(--surface))"></i>Free time</span></div></div>
-  ${detail}
-  <div class="calwrap" id="calwrap"><div class="cal">${g}</div></div>
-  <div class="formhead"><span class="label">Add a one-off event</span></div>
-  <form class="form" id="evForm" autocomplete="off" style="grid-template-columns:minmax(0,2fr) repeat(4,minmax(0,1fr)) auto">
-    <label class="field f-title"><span>Title</span><input class="in" id="ef-title" required placeholder="e.g. Dentist, school trip"></label>
-    <label class="field"><span>Type</span><select class="in" id="ef-kind"><option value="personal">Personal</option><option value="school">School</option></select></label>
-    <label class="field"><span>Date</span><input class="in num" type="date" id="ef-day" required value="${T>=days[0]&&T<=days[6]?T:days[0]}"></label>
-    <label class="field"><span>Start</span><input class="in num" type="time" id="ef-s" required value="16:00"></label>
-    <label class="field"><span>End</span><input class="in num" type="time" id="ef-e" required value="17:00"></label>
-    <div class="acts"><button class="btn" type="submit">Add</button></div>
+  }
+  return g+'</div>';
+}
+function evColor(e){if(e.src==='plan')return planColor(e);return e.kind==='test'?'var(--red)':e.kind==='personal'?'var(--personal)':e.subject?sub(e.subject).color:'var(--school)'}
+function dayCol(day,opts={}){
+  const T=TD(),x=parse(day);
+  const items=[];
+  for(const e of fixedOn(day)){if(e.allDay)continue;items.push({key:`${e.src}|${e.id}|${day}`,s:toMin(e.start),e:toMin(e.end),color:evColor(e),cls:e.kind,label:KINDS[e.kind],title:e.title,sub:`${e.start}–${e.end}${e.room?' · '+e.room:''}`})}
+  for(const b of blocksOn(day))items.push({key:`plan|${b.key}|${day}`,s:toMin(b.start),e:toMin(b.end),color:planColor(b),cls:'plan'+(b.done?' done':''),label:PLANL[b.kind],title:b.title,sub:`${b.start}–${b.end}`});
+  const allDay=fixedOn(day).filter(e=>e.allDay).map(e=>({key:`${e.src}|${e.id}|${day}`,title:e.title,color:e.kind==='holiday'?'var(--gold)':e.kind==='away'?'var(--red)':'var(--school)'}));
+  return{head:opts.head||`<b>${DOW[x.getDay()]}</b><span class="num">${x.getDate()}</span>`,today:day===T,slot:day,allDay,shade:availOn(day),items};
+}
+function detailPanel(){
+  if(!ui.selEvent||/^tt/.test(ui.selEvent))return '';
+  const[src,id,day]=ui.selEvent.split('|');const P=plan();
+  const e=src==='plan'?P.blocks.find(b=>b.key===id):fixedOn(day).find(x=>x.id===id&&x.src===src);
+  if(!e)return '';
+  const lbl=src==='plan'?PLANL[e.kind]:KINDS[e.kind];
+  let acts='';
+  if(src==='plan')acts=e.done?`<button class="btn sec2 sm" data-act="block-undo" data-key="${esc(id)}">Mark not done</button>`:`<button class="btn sm" data-act="focus-block" data-key="${esc(id)}">${ic('play')}Start focus</button><button class="btn sec2 sm" data-act="block-done" data-key="${esc(id)}">Mark done</button>`;
+  else if(src==='test')acts='<a class="btn sec2 sm" href="#tests">Edit in Tests</a>';
+  else if(src==='class')acts=`<button class="btn sec2 sm" data-act="cancel-class" data-id="${id}" data-day="${day}">Cancelled this day</button><a class="btn sec2 sm" href="#timetable">Edit timetable</a>`;
+  else acts=e.dow?`<button class="btn sec2 sm" data-act="skip-ev" data-id="${id}" data-day="${day}">Skip this day only</button><button class="btn danger sm" data-act="del-ev" data-id="${id}">Delete every week</button>`:`<button class="btn danger sm" data-act="del-ev" data-id="${id}">Delete</button>`;
+  return `<div class="evdetail"><div><span class="kind ${e.kind}">${lbl}${src==='plan'?' · planned automatically':e.dow?' · every '+DOWL[parse(day).getDay()]:''}</span><h3>${esc(e.title)}</h3>
+    <div class="muted num" style="font-size:13px">${fmtDate(day)} · ${e.allDay?'All day':e.start+'–'+e.end}${e.subject?' · '+esc(sub(e.subject).name):''}${e.room?' · '+esc(e.room):''}</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${acts}<button class="btn sec2 sm" data-act="sel-ev" data-key="">Close</button></div></div>`;
+}
+const EVKINDS=[['personal','Personal (sport, tuition, plans)'],['school','School event'],['holiday','Holiday: no classes'],['away','Away all day']];
+function eventForm(){
+  const n=ui.newEv;if(!n)return '';
+  const allDay=n.kind==='holiday'||n.kind==='away';
+  return `<form class="form evf" id="evForm" autocomplete="off">
+    <div class="evf-h"><span class="label">New event · ${fmtDate(n.day)}</span><button type="button" class="btn ghost sm" data-act="ev-cancel" style="padding:0">Cancel</button></div>
+    <label class="field f-title"><span>What</span><input class="in" id="ef-title" required value="${esc(n.title||'')}" placeholder="${allDay?'e.g. Diwali holiday':'e.g. Badminton, dentist, cousin’s wedding'}"></label>
+    <label class="field"><span>Type</span><select class="in" id="ef-kind">${EVKINDS.map(([k,l])=>`<option value="${k}" ${n.kind===k?'selected':''}>${l}</option>`).join('')}</select></label>
+    <label class="field"><span>Date</span><input class="in num" type="date" id="ef-day" required value="${n.day}"></label>
+    ${allDay?'':`<label class="field"><span>From</span><input class="in num" type="time" id="ef-s" required value="${n.start}"></label>
+    <label class="field"><span>To</span><input class="in num" type="time" id="ef-e" required value="${n.end}"></label>
+    <label class="field chk"><span>&nbsp;</span><span class="ckl"><input type="checkbox" class="ck" id="ef-rep" ${n.repeat?'checked':''}> Every week</span></label>`}
+    <div class="acts"><button class="btn" type="submit">Add event</button></div>
+    <p class="muted" style="grid-column:1/-1;margin:0;font-size:12.5px">${n.kind==='holiday'?'Classes are removed that day and the whole day becomes free time.':n.kind==='away'?'No study is planned that day.':'This time is taken out of your free time, and the plan moves around it.'}</p>
   </form>`;
+}
+function vCalendar(){
+  const T=TD(),anchor=ui.calDate||T,day=ui.calView==='day';
+  const ws=weekStart(parse(anchor)),we=addDays(ws,6);
+  const days=day?[anchor]:[...Array(7)].map((_,i)=>iso(addDays(ws,i)));
+  const R=gridRange();
+  const a=parse(anchor);
+  const title=day?`${DOWL[a.getDay()]} ${a.getDate()} ${MONL[a.getMonth()]}`:(ws.getMonth()===we.getMonth()?`${ws.getDate()}–${we.getDate()} ${MONL[we.getMonth()]} ${we.getFullYear()}`:`${ws.getDate()} ${MON[ws.getMonth()]} – ${we.getDate()} ${MON[we.getMonth()]} ${we.getFullYear()}`);
+  const P=plan();
+  const planned=P.blocks.filter(b=>b.day>=days[0]&&b.day<=days[days.length-1]);
+  const freeM=days.reduce((s,d)=>s+availOn(d).reduce((x,[p,q])=>x+q-p,0),0);
+  const cols=days.map(d=>dayCol(d,day?{head:`<b>${DOWL[parse(d).getDay()]}</b><span class="num">${parse(d).getDate()} ${MON[parse(d).getMonth()]}</span>`}:{}));
+  let dayList='';
+  if(day){const its=cols[0].items.slice().sort((x,y)=>x.s-y.s);
+    dayList=`<div class="daylist">${its.length?its.map(i=>`<button type="button" class="lrow" data-act="sel-ev" data-key="${esc(i.key)}" style="grid-template-columns:92px minmax(0,1fr) auto;width:100%;background:none;border:0;border-bottom:1px solid var(--line);text-align:left;cursor:pointer;font:inherit;color:inherit"><span class="tm num">${fromMin(i.s)}–${fromMin(i.e)}</span><span class="tt">${esc(i.title)}</span><span class="kind ${i.cls.split(' ')[0]}">${esc(i.label||'')}</span></button>`).join(''):'<div class="empty">Nothing on this day.</div>'}</div>`}
+  return `<div class="phead"><div><h1>Calendar</h1><div class="sub">Classes, events and your planned study. Shaded time is free. Click any empty time to add an event there.</div></div>
+    <dl class="overview num"><div><dt>Study planned</dt><dd>${fmtH(planned.reduce((s,b)=>s+b.min,0))}</dd></div><div><dt>Free time left</dt><dd>${fmtH(freeM)}</dd></div><div><dt>Tests</dt><dd>${S.tests.filter(t=>t.date>=days[0]&&t.date<=days[days.length-1]).length}</dd></div></dl></div>
+  <div class="calbar">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div class="seg" role="group" aria-label="View">${[['day','Day'],['week','Week']].map(([k,l])=>`<button type="button" data-act="calview" data-v="${k}" class="${ui.calView===k?'on':''}">${l}</button>`).join('')}</div>
+      <div class="nav2"><button class="btn sec2 sm" data-act="calnav" data-d="-1" aria-label="Previous">${ic('l')}</button><button class="btn sec2 sm" data-act="calnav" data-d="0">Today</button><button class="btn sec2 sm" data-act="calnav" data-d="1" aria-label="Next">${ic('r')}</button></div>
+      <h2 class="num">${title}</h2>
+    </div>
+    <button class="btn sm" data-act="ev-new">+ Add event</button>
+  </div>
+  ${eventForm()}
+  ${detailPanel()}
+  <div class="${day?'dayview':''}">
+    <div class="calwrap" id="calwrap">${timeGrid({cols,H0:R.H0,H1:R.H1,HH:day?52:44,minW:day?0:104,wide:day})}</div>
+    ${dayList}
+  </div>
+  <div class="legend" style="padding:10px 0"><span><i style="border-color:var(--school);background:color-mix(in srgb,var(--school) 13%,var(--surface))"></i>Class</span><span><i style="border-color:var(--blue);background:var(--surface);outline:1px solid color-mix(in srgb,var(--blue) 45%,transparent)"></i>Planned study</span><span><i style="border-color:var(--red);background:color-mix(in srgb,var(--red) 13%,var(--surface))"></i>Test</span><span><i style="border-color:var(--personal);background:color-mix(in srgb,var(--personal) 13%,var(--surface))"></i>Event</span><span><i style="border-color:transparent;background:color-mix(in srgb,var(--blue) 10%,var(--surface))"></i>Free time</span></div>`;
 }
 
 /* =========================================================
@@ -897,7 +1118,8 @@ function downloadText(name,txt,type){const b=new Blob([txt],{type});const a=docu
 /* =========================================================
    Render
    ========================================================= */
-const ui={taskF:{subject:'all',status:'open',q:''},sort:{key:'due',dir:1},editTask:null,week:0,selEvent:null,confirm:null,flash:null,pick:{cls:[1],free:[1,2,3,4,5],commit:[2]}};
+const ui={taskF:{subject:'all',status:'open',q:''},sort:{key:'due',dir:1},editTask:null,selEvent:null,confirm:null,flash:null,pick:{cls:[1]},
+  calView:(window.matchMedia&&matchMedia('(max-width:700px)').matches)?'day':'week',calDate:null,newEv:null,preview:null,impTab:'link',impMsg:'',impBusy:false,impUrl:''};
 const VFN={dashboard:vDashboard,timetable:vTimetable,tasks:vTasks,tests:vTests,calendar:vCalendar,focus:vFocus,progress:vProgress,settings:vSettings,integrations:vIntegrations};
 let lastView=null;
 function render(){
@@ -917,13 +1139,18 @@ function startApp(){
   F.len=+S.settings.focusLen||45;F.remaining=F.len*60000;
   planVersion++;lastView=null;render();
 }
-window.addEventListener('hashchange',()=>{if(!S||/access_token|type=/.test(location.hash))return;ui.selEvent=null;ui.confirm=null;ui.editTask=null;closeMenu();render()});
+window.addEventListener('hashchange',()=>{if(!S||/access_token|type=/.test(location.hash))return;ui.selEvent=null;if(currentView()!=='calendar')ui.newEv=null;ui.confirm=null;ui.editTask=null;closeMenu();render()});
 function closeMenu(){$('#side').classList.remove('open');$('.scrim').classList.remove('open')}
 
 /* =========================================================
    Events
    ========================================================= */
 document.addEventListener('click',e=>{
+  const slot=S&&!e.target.closest('.ev,.adi')&&e.target.closest('.day.slot');
+  if(slot){const r=slot.getBoundingClientRect();const m=Math.min(23*60,Math.max(0,Math.floor((+slot.dataset.h0*60+(e.clientY-r.top)/(+slot.dataset.hh)*60)/15)*15));
+    ui.newEv={day:slot.dataset.slot,start:fromMin(m),end:fromMin(Math.min(m+60,23*60+45)),kind:'personal',title:''};ui.selEvent=null;
+    if(currentView()!=='calendar'){ui.calView='day';ui.calDate=slot.dataset.slot;go('calendar')}else render();
+    setTimeout(()=>{$('#evForm')?.scrollIntoView({block:'nearest'});$('#ef-title')?.focus()},40);return}
   const a=e.target.closest('[data-act]');if(!a||!S)return;const act=a.dataset.act,id=a.dataset.id;
   switch(act){
     case 'menu':$('#side').classList.add('open');$('.scrim').classList.add('open');break;
@@ -936,14 +1163,23 @@ document.addEventListener('click',e=>{
     case 'sort':{const k=a.dataset.key;ui.sort=ui.sort.key===k?{key:k,dir:-ui.sort.dir}:{key:k,dir:1};render();break}
     case 'status':ui.taskF.status=a.dataset.s;render();break;
     case 'del-test':S.tests=S.tests.filter(x=>x.id!==id);touch();render();break;
-    case 'wk':{const d=+a.dataset.d;ui.week=d===0?0:ui.week+d;ui.selEvent=null;render();break}
+    case 'calview':ui.calView=a.dataset.v;ui.selEvent=null;render();break;
+    case 'calnav':{const d=+a.dataset.d;ui.calDate=d===0?TD():iso(addDays(parse(ui.calDate||TD()),d*(ui.calView==='day'?1:7)));ui.selEvent=null;render();break}
+    case 'cal-open':ui.calView='day';ui.calDate=a.dataset.day;go('calendar');break;
+    case 'ev-new':{const d=ui.calView==='day'?(ui.calDate||TD()):((ui.calDate||TD())<=TD()&&iso(addDays(weekStart(parse(ui.calDate||TD())),6))>=TD()?TD():iso(weekStart(parse(ui.calDate||TD()))));ui.newEv={day:d,start:'17:00',end:'18:00',kind:'personal',title:''};ui.selEvent=null;render();setTimeout(()=>$('#ef-title')?.focus(),30);break}
+    case 'ev-cancel':ui.newEv=null;render();break;
+    case 'skip-ev':{const ev=S.events.find(x=>x.id===id);if(ev){ev.skip=(ev.skip||[]).concat(a.dataset.day)}ui.selEvent=null;touch();render();break}
+    case 'cancel-class':{const c=S.classes.find(x=>x.id===id);if(c){c.skip=(c.skip||[]).concat(a.dataset.day)}ui.selEvent=null;touch();render();break}
+    case 'del-class-day':{const c=S.classes.find(x=>x.id===id);if(c){c.dow=c.dow.filter(x=>x!==+a.dataset.d);if(!c.dow.length)S.classes=S.classes.filter(x=>x!==c)}ui.selEvent=null;touch();render();break}
+    case 'imptab':ui.impTab=a.dataset.t;ui.impMsg='';render();break;
+    case 'imp-paste':runImport('paste',$('#clsPaste').value);break;
+    case 'pv-apply':applyPreview(a.dataset.m);render();window.scrollTo(0,0);break;
+    case 'pv-cancel':ui.preview=null;render();break;
     case 'sel-ev':ui.selEvent=a.dataset.key||null;render();break;
     case 'del-ev':S.events=S.events.filter(x=>x.id!==id);ui.selEvent=null;touch();render();break;
-    case 'del-class':S.classes=S.classes.filter(x=>x.id!==id);touch();render();break;
+    case 'del-class':S.classes=S.classes.filter(x=>x.id!==id);ui.selEvent=null;touch();render();break;
     case 'do-clear-classes':S.classes=[];ui.confirm=null;touch();render();break;
-    case 'del-free':S.free=S.free.filter(x=>x.id!==id);S.freeDefault=false;touch();render();break;
     case 'pick':{const g=a.dataset.g,d=+a.dataset.d,arr=ui.pick[g];const i=arr.indexOf(d);if(i>=0)arr.splice(i,1);else arr.push(d);a.classList.toggle('on');a.setAttribute('aria-pressed',a.classList.contains('on'));break}
-    case 'paste-classes':{const r=importClasses($('#clsPaste').value);finishImport(r);break}
     case 'block-done':markBlock(a.dataset.key,true);ui.selEvent=null;render();break;
     case 'block-undo':markBlock(a.dataset.key,false);ui.selEvent=null;render();break;
     case 'focus-block':focusOnBlock(a.dataset.key);break;
@@ -963,11 +1199,6 @@ document.addEventListener('click',e=>{
     case 'copy-bk':{const msg=$('#bk-msg');navigator.clipboard?.writeText(JSON.stringify(S)).then(()=>msg.textContent='Copied.',()=>msg.textContent='Copying is blocked here. Use Download backup.');break}
   }
 });
-function finishImport(r){
-  touch();
-  ui.flash='cls:'+(r.added?`Added ${r.added} ${r.added===1?'class':'classes'}${r.skipped?`. Skipped ${r.skipped} ${r.skipped===1?'row':'rows'} that had a missing day, time or subject.`:'.'}`:'No classes found. Check the columns are Day, Start, End, Subject, Room.');
-  render();
-}
 document.addEventListener('change',e=>{
   const el=e.target;if(!S)return;
   if(el.dataset.toggle){const t=S.tasks.find(x=>x.id===el.dataset.toggle);if(t){t.done=el.checked;touch();render()}return}
@@ -980,7 +1211,8 @@ document.addEventListener('change',e=>{
   if(el.id==='fTask'){const[k,v]=el.value.split('|');F.blockKey=null;F.taskId=null;F.subject=null;
     if(k==='b'){const b=plan().blocks.find(x=>x.key===v);if(b){F.blockKey=v;F.subject=b.subject;F.len=b.min;F.remaining=b.min*60000}}
     else if(k==='t')F.taskId=v;else if(k==='s')F.subject=v;F.msg=null;render();return}
-  if(el.id==='clsFile'){readFile(el.files&&el.files[0],txt=>finishImport(importClasses(txt)));return}
+  if(el.id==='clsFile'){if(el.files&&el.files[0])runImport('file',el.files[0]);return}
+  if(el.id==='ef-kind'&&ui.newEv){Object.assign(ui.newEv,{kind:el.value,title:$('#ef-title').value,day:$('#ef-day').value||ui.newEv.day,start:$('#ef-s')?.value||ui.newEv.start,end:$('#ef-e')?.value||ui.newEv.end,repeat:$('#ef-rep')?.checked});render();return}
   if(el.id==='ics-file'){const msg=$('#ics-msg'),kind=$('#ics-kind').value;readFile(el.files&&el.files[0],txt=>{
     const evs=parseICS(txt);let n=0;
     for(const x of evs){const title=x.title||'Untitled';if(x.s.time){const st=x.s.time,en=x.e&&x.e.time&&x.e.day===x.s.day?x.e.time:fromMin(Math.min(toMin(st)+60,23*60+59));S.events.push({id:uid(),title,kind,day:x.s.day,start:st,end:en})}else S.events.push({id:uid(),title,kind,day:x.s.day,allDay:true,start:'00:00',end:'23:59'});n++}
@@ -990,12 +1222,13 @@ document.addEventListener('change',e=>{
 function readFile(f,cb){if(!f)return;const r=new FileReader();r.onload=()=>cb(String(r.result));r.readAsText(f)}
 document.addEventListener('input',e=>{
   const el=e.target;if(!S)return;
+  if(el.id==='ef-title'&&ui.newEv){ui.newEv.title=el.value;return}
   if(el.id==='tq'){ui.taskF.q=el.value;$('#tbody').innerHTML=tasksBody();return}
   if(el.dataset.prep){const p=$('#pp-'+el.dataset.prep);if(p)p.textContent=el.value+'%'}
 });
 ['dragover','dragenter'].forEach(t=>document.addEventListener(t,e=>{const d=e.target.closest&&e.target.closest('#drop');if(d){e.preventDefault();d.classList.add('over')}}));
 document.addEventListener('dragleave',e=>{const d=e.target.closest&&e.target.closest('#drop');if(d)d.classList.remove('over')});
-document.addEventListener('drop',e=>{const d=e.target.closest&&e.target.closest('#drop');if(!d)return;e.preventDefault();d.classList.remove('over');readFile(e.dataTransfer.files[0],txt=>finishImport(importClasses(txt)))});
+document.addEventListener('drop',e=>{const d=e.target.closest&&e.target.closest('#drop');if(!d)return;e.preventDefault();d.classList.remove('over');if(e.dataTransfer.files[0])runImport('file',e.dataTransfer.files[0])});
 
 function timesOk(sId,eId,form){const s=$(sId).value,en=$(eId).value;if(!s||!en||toMin(en)<=toMin(s)){$(eId).setCustomValidity('End must be after start');form.reportValidity();$(eId).setCustomValidity('');return false}return true}
 document.addEventListener('submit',e=>{
@@ -1005,19 +1238,15 @@ document.addEventListener('submit',e=>{
     if(ui.editTask){Object.assign(S.tasks.find(t=>t.id===ui.editTask),v);ui.editTask=null}else S.tasks.push({id:uid(),done:false,...v});
     touch();render();$('#tf-title')?.focus()}
   if(f.id==='testForm'){const v={id:uid(),title:$('#xf-title').value.trim(),subject:$('#xf-sub').value,date:$('#xf-date').value,time:$('#xf-time').value||'09:00',dur:Math.max(10,+$('#xf-dur').value||60),prep:Math.min(100,Math.max(0,+$('#xf-prep').value||0))};if(!v.title||!v.date){f.reportValidity();return}S.tests.push(v);touch();render()}
-  if(f.id==='evForm'){if(!timesOk('#ef-s','#ef-e',f))return;const day=$('#ef-day').value;
-    S.events.push({id:uid(),title:$('#ef-title').value.trim(),kind:$('#ef-kind').value,day,start:$('#ef-s').value,end:$('#ef-e').value});
-    ui.week=Math.round((weekStart(parse(day))-weekStart(today()))/(7*864e5));touch();render()}
+  if(f.id==='evForm'){const kind=$('#ef-kind').value,day=$('#ef-day').value,title=$('#ef-title').value.trim();if(!title||!day){f.reportValidity();return}
+    if(kind==='holiday'||kind==='away')S.events.push({id:uid(),title,kind,day,allDay:true,start:'00:00',end:'23:59'});
+    else{if(!timesOk('#ef-s','#ef-e',f))return;const ev={id:uid(),title,kind,start:$('#ef-s').value,end:$('#ef-e').value};if($('#ef-rep').checked)ev.dow=[parse(day).getDay()];else ev.day=day;S.events.push(ev)}
+    ui.newEv=null;ui.calDate=day;touch();render()}
   if(f.id==='clsForm'){if(!ui.pick.cls.length){$('#clsMsg').style.color='var(--red)';$('#clsMsg').textContent='Choose at least one day.';return}if(!timesOk('#cf-s','#cf-e',f))return;
     const s=$('#cf-s').value,en=$('#cf-e').value;S.classes.push({id:uid(),subject:$('#cf-sub').value,dow:[...ui.pick.cls],start:s,end:en,room:$('#cf-room').value.trim()});
     touch();render();const ns=$('#cf-s'),ne=$('#cf-e');if(ns){ns.value=en;ne.value=fromMin(toMin(en)+(toMin(en)-toMin(s)))}}
-  if(f.id==='freeForm'){if(!ui.pick.free.length)return;if(!timesOk('#ff-s','#ff-e',f))return;
-    if(S.freeDefault){S.free=[];S.freeDefault=false}
-    for(const d of ui.pick.free)S.free.push({id:uid(),dow:d,start:$('#ff-s').value,end:$('#ff-e').value});
-    for(const d of WEEK){const w=S.free.filter(x=>x.dow===d);const m=mergeIv(w.map(x=>[toMin(x.start),toMin(x.end)]));if(m.length<w.length){S.free=S.free.filter(x=>x.dow!==d).concat(m.map(([a,b])=>({id:uid(),dow:d,start:fromMin(a),end:fromMin(b)})))}}
-    touch();render()}
-  if(f.id==='commitForm'){if(!ui.pick.commit.length)return;if(!timesOk('#kf-s','#kf-e',f))return;
-    S.events.push({id:uid(),title:$('#kf-title').value.trim(),kind:'personal',dow:[...ui.pick.commit],start:$('#kf-s').value,end:$('#kf-e').value});touch();render()}
+  if(f.id==='hoursForm'){const st=S.settings;st.travel=Math.max(0,Math.min(180,Math.round(+$('#hr-travel').value||0)));st.dayStart=$('#hr-start').value||'09:30';st.lunch=$('#hr-lunch').value||'13:00';st.dayEnd=$('#hr-end').value||'21:30';st.dinner=$('#hr-dinner').value||'20:00';st.dinnerMin=Math.max(0,Math.min(120,Math.round(+$('#hr-dmin').value||0)));st.hoursSet=true;touch();ui.flash='hours';render()}
+  if(f.id==='impLink'){ui.impUrl=$('#imp-url').value.trim();runImport('link',ui.impUrl)}
   if(f.id==='profForm'){S.settings.name=$('#sf-name').value.trim();S.settings.goal=Math.max(1,+$('#sf-goal').value||14);S.settings.focusLen=Math.max(5,+$('#sf-len').value||45);
     if(!F.started){F.len=S.settings.focusLen;F.remaining=F.len*60000}touch();ui.flash='prof';render()}
   if(f.id==='ruleForm'){const st=S.settings,n=(id,lo,hi,d)=>Math.min(hi,Math.max(lo,Math.round(+$(id).value)))||d;
