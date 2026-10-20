@@ -867,10 +867,15 @@ function vTimetable(){
   const shown=days.length<7?[...days,...WEEK.filter(d=>!days.includes(d))]:days;
   const weekFree=WEEK.reduce((a,d)=>a+hoursSummary(d).tot,0);
   const R=gridRange();
-  const cols=shown.map(d=>{const day=nextDateFor(d);return{head:`<b>${DOWL[d]}</b><span class="num" style="font-size:12px;color:var(--slate)">${fmtMin(hoursSummary(d).tot)} free</span>`,
-    shade:availGeneric(day),
+  const showPlan=ui.ttPlan!==false;
+  if(showPlan)shown.sort((x,y)=>nextDateFor(x)<nextDateFor(y)?-1:1);
+  const cols=shown.map(d=>{const day=nextDateFor(d);const bl=showPlan?blocksOn(day):[];const pm=bl.reduce((a,b)=>a+b.min,0);
+    return{head:`<b>${DOWL[d]}</b><span class="num" style="font-size:12px;color:var(--slate)">${showPlan?`${fmtDate(day).slice(4)} · ${fmtMin(pm)} study`:`${fmtMin(hoursSummary(d).tot)} free`}</span>`,
+    today:day===TD(),slot:null,
+    shade:showPlan?availOn(day):availGeneric(day),
     items:S.classes.filter(c=>c.dow.includes(d)).map(c=>({key:`tt|${c.id}|${d}`,s:toMin(c.start),e:toMin(c.end),color:sub(c.subject).color,cls:'class',label:c.room||'Class',title:sub(c.subject).name,sub:`${c.start}–${c.end}`}))
-      .concat(S.events.filter(e=>Array.isArray(e.dow)&&e.dow.includes(d)).map(e=>({key:`ttev|${e.id}|${d}`,s:toMin(e.start),e:toMin(e.end),color:'var(--personal)',cls:'personal',label:'Every week',title:e.title,sub:`${e.start}–${e.end}`})))}});
+      .concat(S.events.filter(e=>Array.isArray(e.dow)&&e.dow.includes(d)).map(e=>({key:`ttev|${e.id}|${d}`,s:toMin(e.start),e:toMin(e.end),color:'var(--personal)',cls:'personal',label:'Every week',title:e.title,sub:`${e.start}–${e.end}`})))
+      .concat(bl.map(b=>({key:`plan|${b.key}|${day}`,s:toMin(b.start),e:toMin(b.end),color:planColor(b),cls:'plan'+(b.done?' done':''),label:PLANL[b.kind],title:b.title,sub:`${b.start}–${b.end}`})))}});
   let sel='';
   if(ui.selEvent&&/^tt/.test(ui.selEvent)){const[k,id,d]=ui.selEvent.split('|');
     if(k==='tt'){const c=S.classes.find(x=>x.id===id);if(c)sel=`<div class="evdetail"><div><span class="kind">Class · ${c.dow.map(x=>DOW[x]).join(', ')}</span><h3>${esc(sub(c.subject).name)}</h3><div class="muted num" style="font-size:13px">${c.start}–${c.end}${c.room?' · '+esc(c.room):''}</div></div>
@@ -906,9 +911,10 @@ function vTimetable(){
   </section>`:''}
 
   <section class="sec">
-    <div class="sh"><h2>Your week</h2><span class="aside">Shaded = free to study · tap a class to change it</span></div>
-    ${sel}
-    <div class="calwrap" id="calwrap">${timeGrid({cols,H0:R.H0,H1:R.H1,HH:40,minW:104})}</div>
+    <div class="sh"><h2>Your week</h2><span class="aside" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap"><span>Shaded = free time · tap any block for details</span>
+      <span class="seg" role="group" aria-label="Show">${[['1','Classes and study'],['0','Classes only']].map(([k,l])=>`<button type="button" data-act="ttplan" data-v="${k}" class="${(ui.ttPlan!==false)===(k==='1')?'on':''}">${l}</button>`).join('')}</span></span></div>
+    ${sel}${detailPanel()}
+    <div class="calwrap" id="calwrap">${timeGrid({cols,H0:R.H0,H1:R.H1,HH:52,minW:118})}</div>
     <details style="margin-top:12px" ${S.classes.length?'':'open'}><summary style="cursor:pointer;font-size:13px;color:var(--link)">Add a class by hand</summary>
     <form class="form cls" id="clsForm" autocomplete="off">
       <label class="field f-title"><span>Subject</span><select class="in" id="cf-sub">${S.subjects.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
@@ -1383,6 +1389,7 @@ document.addEventListener('click',e=>{
     case 'hol-apply':{const n=ui.holPreview.list.length;for(const h of ui.holPreview.list)if(!S.holidays.some(x=>x.start===h.start&&x.end===h.end))S.holidays.push({id:uid(),...h});ui.holPreview=null;touch();ui.holMsg='';render();break}
     case 'hol-cancel':ui.holPreview=null;render();break;
     case 'del-hol':S.holidays=S.holidays.filter(h=>h.id!==id);touch();render();break;
+    case 'ttplan':ui.ttPlan=a.dataset.v==='1';ui.selEvent=null;render();break;
     case 'imptab':ui.impTab=a.dataset.t;ui.impMsg='';render();break;
     case 'imp-paste':runImport('paste',$('#clsPaste').value);break;
     case 'pv-apply':applyPreview(a.dataset.m);render();window.scrollTo(0,0);break;
