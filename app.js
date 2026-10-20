@@ -76,6 +76,17 @@ function exampleState(name){
   const holidays=[{id:uid(),name:'Mid-term break',start:D(12),end:D(15)}];
   return {v:2,sample:true,settings:{...DEFAULT_SETTINGS,name:name||'',hoursSet:true},subjects,classes,holidays,tasks,tests,events,doneBlocks:[],log,revision};
 }
+function mergeSubjects(st){
+  const map={};
+  for(const x of st.subjects){const b=baseName(x.name);if(!b||b===x.name)continue;
+    const tgt=st.subjects.find(y=>y!==x&&y.name.toLowerCase()===b.toLowerCase());
+    if(tgt)map[x.id]=tgt.id;else x.name=b}
+  if(!Object.keys(map).length)return;
+  const fix=o=>{if(o&&map[o.subject])o.subject=map[o.subject]};
+  [st.classes,st.tasks,st.tests,st.log,st.revision,st.doneBlocks,st.events].forEach(a=>a.forEach(fix));
+  st.subjects=st.subjects.filter(x=>!map[x.id]);
+  const seen=new Map();st.classes=st.classes.filter(c=>{const k=[c.subject,c.start,c.end,c.room||''].join('|');const p=seen.get(k);if(p){c.dow.forEach(d=>{if(!p.dow.includes(d))p.dow.push(d)});return false}seen.set(k,c);return true});
+}
 function normalize(o){
   if(!o||typeof o!=='object')return null;
   const base=emptyState('');
@@ -84,6 +95,7 @@ function normalize(o){
   s.events=s.events.filter(e=>e.kind!=='study'); // v1 hand-made study sessions are now planned automatically
   s.log.forEach(l=>{if(!l.id)l.id=uid()});
   delete s.free;delete s.freeDefault;
+  mergeSubjects(s);
   s.v=2;return s;
 }
 
@@ -197,6 +209,9 @@ function classify(name){
   return 'other';
 }
 const subType=s=>s.type||classify(s.name);
+const NONACAD=/assembly|well-?being|^p\.?e\.?\b|physical ed|games|sports?\b|homeroom|form time|tutor|registration|library|pshe|\bclub\b|chapel|lunch|break|recess|activity|mentoring|counsel|yoga|swim|badminton|football|cricket|basketball|dance|choir|band\b/i;
+const revises=s=>s.revise!=null?!!s.revise:!NONACAD.test(s.name);
+const baseName=n=>String(n||'').replace(/\s*[\(\[].*$/,'').replace(/\s+(\d+[a-z]?|[a-z]\d*|set \w+|hl|sl)$/i,'').replace(/\s+/g,' ').trim();
 const subLead=s=>Math.max(1,Math.min(28,+(s.prepDays??STYPES[subType(s)][1])||7));
 const isBigTest=t=>(+t.dur||0)>=90||/exam|mid-?term|final|board|annual|term[- ]end|half[- ]yearly|pre-?board/i.test(t.title||'');
 function prepDaysFor(t){const base=subLead(sub(t.subject));return Math.min(28,isBigTest(t)?Math.round(base*1.5):base)}
@@ -328,14 +343,23 @@ function mergeIv(iv){iv=iv.map(x=>[x[0],x[1]]).sort((a,b)=>a[0]-b[0]);const o=[]
 function subIv(iv,s,e){const o=[];for(const[a,b] of iv){if(e<=a||s>=b){o.push([a,b]);continue}if(s>a)o.push([a,s]);if(e<b)o.push([e,b])}return o}
 function freeWindows(day,generic){
   const st=S.settings;if(!generic&&dayFlags(day).away)return[];
-  const cls=classesOn(day,generic),end=toMin(st.dayEnd);
-  const start=cls.length?Math.max(...cls.map(c=>toMin(c.end)))+(+st.travel||0):toMin(st.dayStart);
+  const cls=classesOn(day,generic),end=toMin(st.dayEnd),se=schoolEnd(cls);
+  const start=se!=null?se+(+st.travel||0):toMin(st.dayStart);
   let iv=start<end?[[start,end]]:[];
   if(!cls.length){const l=toMin(st.lunch);iv=subIv(iv,l,l+45)}
   if(+st.dinnerMin>0){const d=toMin(st.dinner);iv=subIv(iv,d,d+(+st.dinnerMin))}
   return iv.filter(([a,b])=>b-a>=10);
 }
-function availOn(day){let iv=freeWindows(day);for(const x of fixedOn(day))if(!x.allDay)iv=subIv(iv,toMin(x.start)-(x.kind==='class'?0:GAP),toMin(x.end)+GAP);return iv.filter(([a,b])=>b-a>=10)}
+function schoolEnd(cls){
+  const iv=cls.map(c=>[toMin(c.start),toMin(c.end)]).sort((a,b)=>a[0]-b[0]);if(!iv.length)return null;
+  let end=iv[0][1];for(const[a,b] of iv.slice(1)){if(a-end<=60||a<15*60)end=Math.max(end,b);else break}return end;
+}
+function availOn(day){
+  let iv=freeWindows(day);const se=schoolEnd(classesOn(day)),tr=Math.min(30,Math.round((+S.settings.travel||0)/2));
+  for(const x of fixedOn(day))if(!x.allDay){const after=x.kind==='class'&&se!=null&&toMin(x.start)>=se;
+    iv=subIv(iv,toMin(x.start)-(x.kind==='class'?(after?tr:0):GAP),toMin(x.end)+(after?tr:GAP))}
+  return iv.filter(([a,b])=>b-a>=10);
+}
 function freeOn(day){
   let iv=availOn(day);
   for(const b of [...S.doneBlocks,...liveBlocks()])if(b.day===day)iv=subIv(iv,toMin(b.start),toMin(b.end)+GAP);
@@ -416,7 +440,7 @@ function plan(){
   }
   // 4. Revision sessions: top each day up to the daily study target, favouring subjects with tests coming up.
   const ids=new Set([...S.classes.map(c=>c.subject),...S.tests.map(t=>t.subject),...S.tasks.map(t=>t.subject)]);
-  let cand=S.subjects.filter(x=>ids.has(x.id));if(!cand.length)cand=S.subjects.slice();
+  let cand=S.subjects.filter(x=>ids.has(x.id)&&revises(x));if(!cand.length)cand=S.subjects.filter(revises);
   const last={};for(const l of S.log)if(l.subject&&(!last[l.subject]||l.date>last[l.subject]))last[l.subject]=l.date;
   const count={};
   for(const d of days){
@@ -800,19 +824,19 @@ function analyseTimetable(rows){
   }
   return {layout:cands[0][0],classes:merged};
 }
-const ALIASES=[['mathematics','maths','math','mat'],['physics','phy','phys'],['chemistry','chem','che'],['biology','bio'],['english','eng','english language','english literature','eng lit','literature'],['history','hist'],['geography','geo','geog'],['computer science','computers','comp sci','cs','ict','computing','computer'],['economics','eco','econ'],['physical education','pe','games','sports'],['business studies','business','bst'],['accountancy','accounts','acc'],['social studies','sst','social science'],['environmental science','evs','environment'],['french','fr'],['hindi','hin'],['spanish','span'],['art','arts','art and design'],['music','mus']];
+const ALIASES=[['mathematics','maths','math','mat'],['physics','phy','phys'],['chemistry','chem','che'],['biology','bio'],['english','eng'],['english literature','eng lit','literature','english lit'],['english language','eng lang','english lang'],['history','hist'],['geography','geo','geog'],['computer science','computers','comp sci','cs','computing','computer'],['ict','information technology','it'],['economics','eco','econ'],['physical education','pe','games','sports'],['business studies','business','bst'],['accountancy','accounts','acc'],['social studies','sst','social science'],['environmental science','evs','environment'],['french','fr'],['hindi','hin'],['spanish','span'],['art','arts','art and design'],['music','mus']];
 function matchSubject(name){
   const n=name.toLowerCase().replace(/[^a-z ]/g,'').replace(/\s+/g,' ').trim();
   const exact=S.subjects.find(s=>s.name.toLowerCase()===n);if(exact)return exact;
-  const grp=ALIASES.find(g=>g.includes(n)||g.some(a=>a.length>3&&n.startsWith(a)));
-  if(grp){const s=S.subjects.find(s=>grp.includes(s.name.toLowerCase()));if(s)return s}
+  const grp=ALIASES.find(g=>g.includes(n))||ALIASES.find(g=>g.some(a=>a.length>3&&n.startsWith(a)&&!ALIASES.some(h=>h!==g&&h.some(b=>b.length>a.length&&n.startsWith(b)))));
+  if(grp){const s=S.subjects.find(s=>grp.includes(s.name.toLowerCase()));return s||null}
   if(n.length>=4){const s=S.subjects.find(s=>s.name.toLowerCase().startsWith(n)||n.startsWith(s.name.toLowerCase()));if(s)return s}
   return null;
 }
-function prettyName(name){const n=name.replace(/\s+/g,' ').trim();const k=n.toLowerCase().replace(/[^a-z ]/g,'').trim();const grp=ALIASES.find(g=>g.includes(k));const base=grp?grp[0]:n;return base.length<=3&&!grp?base.toUpperCase():base.replace(/\b\w/g,c=>c.toUpperCase())}
+function prettyName(name){const n=name.replace(/\s+/g,' ').trim();const k=n.toLowerCase().replace(/[^a-z ]/g,'').trim();const grp=ALIASES.find(g=>g.includes(k));const base=grp?grp[0]:n;return base.length<=3?base.toUpperCase():base.replace(/\b\w/g,c=>c.toUpperCase())}
 function buildPreview(found,source){
   const subjects={};
-  for(const c of found.classes){const k=c.subject.toLowerCase();if(!subjects[k]){const m=matchSubject(c.subject);subjects[k]={raw:c.subject,match:m,name:m?m.name:prettyName(c.subject),count:0}}subjects[k].count++}
+  for(const c of found.classes){const k=baseName(c.subject).toLowerCase();c.key=k;if(!subjects[k]){const m=matchSubject(baseName(c.subject));subjects[k]={raw:c.subject,match:m,name:m?m.name:prettyName(baseName(c.subject)),count:0}}else if(!subjects[k].raw.split(', ').includes(c.subject))subjects[k].raw+=', '+c.subject;subjects[k].count++}
   ui.preview={source,layout:found.layout,classes:found.classes,subjects};
 }
 function applyPreview(mode){
@@ -822,7 +846,7 @@ function applyPreview(mode){
   for(const k in p.subjects){const s=p.subjects[k];let sj=s.match||S.subjects.find(x=>x.name.toLowerCase()===s.name.toLowerCase());
     if(!sj){sj={id:uid(),name:s.name,color:PALETTE[S.subjects.length%PALETTE.length]};S.subjects.push(sj)}idFor[k]=sj.id}
   for(const c of p.classes){
-    const sid=idFor[c.subject.toLowerCase()],st=fromMin(c.s),en=fromMin(c.e);
+    const sid=idFor[c.key||baseName(c.subject).toLowerCase()],st=fromMin(c.s),en=fromMin(c.e);
     const same=S.classes.find(x=>x.subject===sid&&x.start===st&&x.end===en&&(x.room||'')===(c.room||''));
     if(same){if(!same.dow.includes(c.dow))same.dow.push(c.dow)}else S.classes.push({id:uid(),subject:sid,dow:[c.dow],start:st,end:en,room:c.room||''});
   }
@@ -858,7 +882,7 @@ async function runImport(kind,payload){
 /* ---- Study hours ---- */
 function hoursSummary(dow){const d=nextDateFor(dow);const w=availGeneric(d);return{w,tot:w.reduce((a,[x,y])=>a+y-x,0)}}
 function nextDateFor(dow){const t=today();return iso(addDays(t,(dow-t.getDay()+7)%7))}
-function availGeneric(day){let iv=freeWindows(day,true);for(const c of classesOn(day,true))iv=subIv(iv,toMin(c.start),toMin(c.end));for(const e of S.events)if(Array.isArray(e.dow)&&e.dow.includes(parse(day).getDay()))iv=subIv(iv,toMin(e.start)-GAP,toMin(e.end)+GAP);return iv.filter(([a,b])=>b-a>=10)}
+function availGeneric(day){let iv=freeWindows(day,true);const cs=classesOn(day,true),se=schoolEnd(cs),tr=Math.min(30,Math.round((+S.settings.travel||0)/2));for(const c of cs){const after=se!=null&&toMin(c.start)>=se;iv=subIv(iv,toMin(c.start)-(after?tr:0),toMin(c.end)+(after?tr:0))}for(const e of S.events)if(Array.isArray(e.dow)&&e.dow.includes(parse(day).getDay()))iv=subIv(iv,toMin(e.start)-GAP,toMin(e.end)+GAP);return iv.filter(([a,b])=>b-a>=10)}
 
 function vTimetable(){
   const clsMin=S.classes.reduce((a,c)=>a+c.dow.length*(toMin(c.end)-toMin(c.start)),0);
@@ -906,7 +930,7 @@ function vTimetable(){
     <div class="tw" style="border-top:0;margin-bottom:12px"><table><thead><tr><th>In your sheet</th><th>Becomes</th><th class="r">Classes</th></tr></thead><tbody>
       ${Object.values(P.subjects).map(s=>`<tr><td>${esc(s.raw)}</td><td>${s.match?subjMark(s.match.id):`<span class="subj"><i style="background:var(--line-strong)"></i>${esc(s.name)}</span> <span class="kind" style="margin-left:6px">New subject</span>`}</td><td class="r num">${s.count}</td></tr>`).join('')}
     </tbody></table></div>
-    <div class="calwrap"><div style="min-width:${52+[...new Set(P.classes.map(c=>c.dow))].length*96}px">${timeGrid({cols:WEEK.filter(d=>P.classes.some(c=>c.dow===d)).map(d=>({head:`<b>${DOW[d]}</b>`,items:P.classes.filter(c=>c.dow===d).map((c,i)=>({key:'pv|'+i,s:c.s,e:c.e,color:(P.subjects[c.subject.toLowerCase()].match||{}).color||'var(--slate)',cls:'class',label:c.room||'',title:P.subjects[c.subject.toLowerCase()].name,sub:`${fromMin(c.s)}–${fromMin(c.e)}`}))})),H0:Math.floor(Math.min(...P.classes.map(c=>c.s))/60),H1:Math.ceil(Math.max(...P.classes.map(c=>c.e))/60),HH:40,minW:96,inert:true})}</div></div>
+    <div class="calwrap"><div style="min-width:${52+[...new Set(P.classes.map(c=>c.dow))].length*96}px">${timeGrid({cols:WEEK.filter(d=>P.classes.some(c=>c.dow===d)).map(d=>({head:`<b>${DOW[d]}</b>`,items:P.classes.filter(c=>c.dow===d).map((c,i)=>({key:'pv|'+i,s:c.s,e:c.e,color:(P.subjects[c.key].match||{}).color||'var(--slate)',cls:'class',label:c.room||'',title:P.subjects[c.key].name,sub:`${fromMin(c.s)}–${fromMin(c.e)}`}))})),H0:Math.floor(Math.min(...P.classes.map(c=>c.s))/60),H1:Math.ceil(Math.max(...P.classes.map(c=>c.e))/60),HH:40,minW:96,inert:true})}</div></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;padding:14px 0">${S.classes.length?`<button class="btn" data-act="pv-apply" data-m="replace">Replace my timetable</button><button class="btn sec2" data-act="pv-apply" data-m="add">Add to my timetable</button>`:`<button class="btn" data-act="pv-apply" data-m="replace">Use this timetable</button>`}<button class="btn ghost" data-act="pv-cancel">Discard</button></div>
   </section>`:''}
 
@@ -932,10 +956,10 @@ function vTimetable(){
   <section class="sec">
     <div class="sh"><h2>How your free time is worked out</h2>${ui.flash==='hours'?'<span class="ok">Saved. Free time and the plan have been updated.</span>':''}</div>
     <form id="hoursForm" class="hours-rules" autocomplete="off">
-      <p>On school days, study time starts when your last class ends, plus <input class="in num inl" type="number" id="hr-travel" min="0" max="180" step="5" value="${st.travel}"> min to get home.</p>
+      <p>On school days, study time starts when the school day ends, plus <input class="in num inl" type="number" id="hr-travel" min="0" max="180" step="5" value="${st.travel}"> min to get home.</p>
       <p>On days without classes, start at <input class="in num inl" type="time" id="hr-start" value="${st.dayStart}">, with lunch at <input class="in num inl" type="time" id="hr-lunch" value="${st.lunch}">.</p>
       <p>Stop studying by <input class="in num inl" type="time" id="hr-end" value="${st.dayEnd}">. Dinner at <input class="in num inl" type="time" id="hr-dinner" value="${st.dinner}"> for <input class="in num inl" type="number" id="hr-dmin" min="0" max="120" step="5" value="${st.dinnerMin}"> min.</p>
-      <p class="muted" style="font-size:12.5px">Events you add to the calendar, and tests, are taken out of free time on their day.</p>
+      <p class="muted" style="font-size:12.5px">Classes more than an hour after school ends, such as tuition, only block their own time plus travel. Events and tests are taken out of free time on their day.</p>
       <div><button class="btn" type="submit">Save</button></div>
     </form>
   </section>`;
@@ -1276,12 +1300,13 @@ function vSettings(){
       <button class="btn" type="submit">Save rules</button></div>
       <span class="muted" style="font-size:12.5px">Prep sessions in the last two days before a test are 15 minutes longer. Past papers follow the subject of your next test.</span>
       ${ui.flash==='rules'?'<span class="ok">Saved. The plan has been rebuilt.</span>':''}</form></div>
-  <div class="set"><div><h2>Subjects</h2><p>Each subject keeps one colour everywhere. The type sets how many days before a test the prep starts, and you can change the number of days.</p></div>
+  <div class="set"><div><h2>Subjects</h2><p>Each subject keeps one colour everywhere. The type sets how many days before a test the prep starts, and you can change the number of days. Untick Revise for things like Assembly or PE so no revision is planned for them.</p></div>
     <div class="body">${S.subjects.map(s=>{const used=S.tasks.some(t=>t.subject===s.id)||S.tests.some(t=>t.subject===s.id)||S.classes.some(t=>t.subject===s.id);return `<div class="row" style="align-items:center">
       <input type="color" class="sw" value="${esc(s.color)}" data-color="${s.id}" aria-label="Colour for ${esc(s.name)}">
       <input class="in" style="flex:1 1 180px;width:auto" value="${esc(s.name)}" data-sname="${s.id}" aria-label="Subject name">
       <select class="in" style="width:150px" data-stype="${s.id}" aria-label="Subject type">${Object.entries(STYPES).map(([k,[l]])=>`<option value="${k}" ${subType(s)===k?'selected':''}>${l}</option>`).join('')}</select>
       <label class="ckl" style="font-size:12.5px;color:var(--slate);display:inline-flex;align-items:center;gap:6px"><input class="in num" type="number" min="1" max="28" style="width:60px" value="${subLead(s)}" data-slead="${s.id}" aria-label="Days of prep">days</label>
+      <label class="ckl" style="font-size:12.5px;display:inline-flex;align-items:center;gap:6px"><input type="checkbox" class="ck" data-srev="${s.id}" ${revises(s)?'checked':''}>Revise</label>
       <button class="icon" data-act="del-sub" data-id="${s.id}" ${used?'disabled title="Used by classes, homework or tests"':''} aria-label="Remove subject" style="${used?'opacity:.3;cursor:not-allowed':''}">${ic('del')}</button></div>`}).join('')}
       <form class="row" id="subForm" autocomplete="off"><input type="color" class="sw" id="nf-color" value="${PALETTE[S.subjects.length%PALETTE.length]}" aria-label="Colour"><input class="in" style="flex:1 1 200px;width:auto" id="nf-name" required placeholder="Add a subject"><button class="btn sec2" type="submit">Add</button></form></div></div>
   <div class="set"><div><h2>Data</h2><p>${CLOUD?'Your planner is saved to your account and syncs across devices.':'Everything is stored in this browser on this device.'}</p></div>
@@ -1426,6 +1451,7 @@ document.addEventListener('change',e=>{
   if(el.dataset.rev){const r=S.revision.find(x=>x.id===el.dataset.rev);if(r){r.done=el.checked;touch();render()}return}
   if(el.dataset.prep){const t=S.tests.find(x=>x.id===el.dataset.prep);if(t){t.prep=+el.value;touch()}return}
   if(el.dataset.color){const s=sub(el.dataset.color);s.color=el.value;touch();return}
+  if(el.dataset.srev){const x=S.subjects.find(z=>z.id===el.dataset.srev);if(x){x.revise=el.checked;touch()}return}
   if(el.dataset.stype){const x=S.subjects.find(z=>z.id===el.dataset.stype);if(x){x.type=el.value;delete x.prepDays;touch();render()}return}
   if(el.dataset.slead){const x=S.subjects.find(z=>z.id===el.dataset.slead);if(x){x.prepDays=Math.max(1,Math.min(28,Math.round(+el.value||7)));touch()}return}
   if(el.dataset.sname){const s=S.subjects.find(x=>x.id===el.dataset.sname);if(s&&el.value.trim()){s.name=el.value.trim();touch()}return}
