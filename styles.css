@@ -1,3 +1,4 @@
+[hidden]{display:none!important}
 /* Layout: fixed navy rail + open editorial workspace; hairline rules, no cards; 2-col dashboard (main / secondary) */
 :root{
   --navy:#14243A; --blue:#244B75; --gold:#B89A57; --bg:#FAF9F6; --surface:#FFFFFF;
@@ -536,3 +537,44 @@ details.tl-row[open] .tl-a::before{font-size:12.5px}
 .cal .ev.tuition{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--c) 14%,var(--surface)) 0 5px,color-mix(in srgb,var(--c) 6%,var(--surface)) 5px 10px)}
 .cal .ev.tuition .k{color:var(--heading)}
 .tl-row.tuition .rail i{background:var(--surface);box-shadow:inset 0 0 0 2px var(--c)}
+
+/* ---------- v7: assistant ---------- */
+#chatFab{position:fixed;right:max(20px,env(safe-area-inset-right,0px));bottom:calc(20px + env(safe-area-inset-bottom,0px));z-index:50;display:inline-flex;align-items:center;gap:8px;height:42px;padding:0 16px;background:var(--btn);color:var(--btn-ink);border:0;border-radius:0;font:500 13.5px var(--sans);cursor:pointer;box-shadow:0 1px 0 rgba(0,0,0,.08)}
+#chatFab svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.4}
+#chatFab::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--gold)}
+body.running #chatFab{bottom:calc(84px + env(safe-area-inset-bottom,0px))}
+#chatPane{position:fixed;right:max(20px,env(safe-area-inset-right,0px));bottom:calc(20px + env(safe-area-inset-bottom,0px));z-index:60;width:min(400px,calc(100vw - 40px));height:min(620px,calc(100vh - 100px));display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line-strong);border-top:2px solid var(--gold);box-shadow:0 12px 32px rgba(20,36,58,.14)}
+body.running #chatPane{bottom:calc(84px + env(safe-area-inset-bottom,0px));height:min(620px,calc(100vh - 170px))}
+#chatPane header{display:flex;justify-content:space-between;align-items:center;padding:12px 12px 12px 16px;border-bottom:1px solid var(--line)}
+#chatPane header b{display:block;font:600 15px var(--serif);color:var(--heading)}
+#chatPane header small{font-size:12px;color:var(--slate)}
+#chatPane .icon svg{stroke:currentColor;fill:none;stroke-width:1.5}
+.cm-list{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px;overscroll-behavior:contain}
+.cm{max-width:88%;font-size:13.5px;line-height:1.5;padding:9px 12px;white-space:normal;overflow-wrap:anywhere}
+.cm.me{align-self:flex-end;background:var(--navy);color:#F3F1EA}
+:root[data-theme="dark"] .cm.me{background:var(--btn)}
+.cm.bot{align-self:flex-start;background:var(--hover);color:var(--ink)}
+.cm.card{align-self:stretch;max-width:none;border:1px solid var(--line-strong);border-left:2px solid var(--gold);background:var(--surface);display:flex;flex-direction:column;gap:3px}
+.cm.card b{font-weight:500;color:var(--heading)}
+.cm.card small{color:var(--slate);font-size:12.5px}
+.cm.card.settled{border-left-color:var(--line-strong)}
+.cm-acts{display:flex;gap:6px;margin-top:8px}
+.cm-res{margin-top:6px;font-size:12.5px;color:var(--slate)}
+.cm-res.ok{color:var(--blue)}
+.cm.typing{display:flex;gap:4px;padding:12px}
+.cm.typing i{width:6px;height:6px;background:var(--slate);opacity:.4;animation:dot 1s infinite}
+.cm.typing i:nth-child(2){animation-delay:.15s}.cm.typing i:nth-child(3){animation-delay:.3s}
+@keyframes dot{50%{opacity:1}}
+.cm-sugg{display:flex;gap:6px;overflow-x:auto;padding:8px 16px;border-top:1px solid var(--line);scrollbar-width:none}
+.cm-sugg button{flex:none;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);font-size:12px;padding:4px 9px;cursor:pointer;white-space:nowrap}
+.cm-sugg button:hover{border-color:var(--blue);color:var(--link)}
+#chatForm{display:flex;gap:8px;padding:10px 12px calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--line)}
+#chatForm .in{flex:1;height:38px}
+#chatForm .btn{height:38px}
+@media (max-width:640px){
+  #chatFab span{display:none}
+  #chatFab{width:48px;height:48px;padding:0;justify-content:center}
+  #chatPane{inset:0;width:auto;height:auto;border:0;border-top:2px solid var(--gold);padding-top:env(safe-area-inset-top,0px)}
+  body.running #chatPane{bottom:0;height:auto}
+}
+@media (prefers-reduced-motion:reduce){.cm.typing i{animation:none;opacity:.7}}

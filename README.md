@@ -12,6 +12,7 @@ A study planner that fits homework, reading, past papers and test preparation ar
 - **Calendar**: Day and Week views of classes, tests, events and planned sessions, with free time shaded. Click any empty time to add an event on that day: a one-off, every week, a holiday (no classes) or a day away. The plan moves around it.
 - **Study plan**: every day is filled up to a study target (90 minutes on school days, 3 hours on days off, both adjustable). Homework is spread evenly before each deadline, tests get daily prep, and the remaining time goes to revision sessions for the subjects that need it most: the ones with tests coming up, lower readiness, or not studied recently.
 - **Session timers**: every planned session has its own Start button on the dashboard and calendar. A bar along the bottom keeps the timer visible on every page. When it ends, the session is marked done and the time is logged. Focus mode gives a full-screen timer.
+- **Assistant**: the “Ask Quire” button opens a chat. Tell it about changes in plain words (“football Saturday 4 to 6”, “no tuition tomorrow”, “Friday is a holiday”, “biology test on 3 Nov”, “maths homework due Friday, 45 min”) or ask about your plan (“what should I study now?”). Every change is shown for you to confirm, and can be undone. With the assistant service set up (below), it also answers study questions.
 - **Progress**: weekly hours, time per subject, a habit streak and a revision checklist.
 - **Accounts**: email and password sign-in through Supabase. Each student's planner is private and syncs across devices.
 
@@ -56,3 +57,16 @@ In the repository, go to **Settings → Pages**. Choose **Deploy from a branch**
 | `config.js` | Supabase connection details |
 | `supabase-setup.sql` | Database table and privacy rules |
 | `timetable-template.csv` | Example timetable to fill in |
+
+## Turning on study questions in the assistant (optional)
+
+Schedule changes work straight away. To let the assistant answer subject doubts, it needs an AI service. This uses an Anthropic API key, which is billed per message, so it runs on the server and the key never reaches the browser.
+
+1. Set up accounts first (see above).
+2. Get an API key at [console.anthropic.com](https://console.anthropic.com) (Settings → API keys). Add a small amount of credit and, if you like, a monthly spend limit.
+3. In Supabase, open **Edge Functions → Secrets** and add:
+   - `ANTHROPIC_API_KEY`: your key
+   - `ALLOWED_EMAILS` (recommended): the email addresses allowed to use the assistant, separated by commas, so other people who sign up can't run up charges
+4. Open **Edge Functions → Deploy a new function → Via editor**, name it `assistant`, paste the contents of [`supabase/functions/assistant/index.ts`](supabase/functions/assistant/index.ts) and deploy. Leave **Verify JWT** switched on.
+
+Once that's done, sign in to the site and the assistant answers study questions too.

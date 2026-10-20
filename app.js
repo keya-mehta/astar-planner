@@ -190,7 +190,7 @@ async function enter(u){
   else{S=cacheRead()||emptyState(u.user_metadata?.name);await pushCloud()}
   startApp();
 }
-async function signOut(){if(CLOUD){clearTimeout(saveT);if(syncState==='saving')await pushCloud();await sb.auth.signOut()}user=null;S=null;location.hash='';showAuth('in')}
+async function signOut(){CHAT.open=false;CHAT.msgs=[];if(CLOUD){clearTimeout(saveT);if(syncState==='saving')await pushCloud();await sb.auth.signOut()}user=null;S=null;location.hash='';showAuth('in')}
 
 async function boot(){
   if(!CLOUD){S=cacheRead()||migrateV1()||emptyState('');startApp();return}
@@ -1385,7 +1385,7 @@ function render(){
   if(v!=='focus'&&fsOn)setFs(false);
   if(location.hash==='#holidays'&&v!==lastView)setTimeout(()=>$('#holidays')?.scrollIntoView({block:'start'}),0);
   lastView=v;ui.flash=null;
-  renderRunbar();
+  renderRunbar();renderChat();
 }
 function renderRunbar(){
   let el=$('#runbar');if(!el){el=document.createElement('div');el.id='runbar';el.setAttribute('role','region');el.setAttribute('aria-label','Running session');document.body.appendChild(el)}
@@ -1397,7 +1397,7 @@ function go(v){if(location.hash==='#'+v)render();else location.hash=v}
 function startApp(){
   document.body.classList.add('authed');$('#auth').innerHTML='';
   F.len=+S.settings.focusLen||45;F.remaining=F.len*60000;
-  planVersion++;lastView=null;render();
+  planVersion++;lastView=null;chatLoad();render();
 }
 window.addEventListener('hashchange',()=>{if(!S||/access_token|type=/.test(location.hash))return;ui.selEvent=null;if(currentView()!=='calendar')ui.newEv=null;ui.confirm=null;ui.editTask=null;closeMenu();render()});
 function closeMenu(){$('#side').classList.remove('open');$('.scrim').classList.remove('open')}
@@ -1540,6 +1540,305 @@ document.addEventListener('keydown',e=>{
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&F.running){tick();lockWake()}});
 setInterval(()=>{if(S&&!F.running&&['dashboard','calendar'].includes(currentView())&&!document.activeElement?.matches('input,select,textarea'))render()},60000);
+
+/* =========================================================
+   Assistant
+   ========================================================= */
+const CHAT={open:false,msgs:[],busy:false,undo:null,seq:0};
+const chatKey=()=>'quire.chat.'+(user?user.id:'local');
+function chatLoad(){try{const r=localStorage.getItem(chatKey());CHAT.msgs=r?JSON.parse(r).slice(-40):[]}catch(e){CHAT.msgs=[]}CHAT.msgs.forEach(m=>{if(m.pending)m.pending=false})}
+function chatSave(){try{localStorage.setItem(chatKey(),JSON.stringify(CHAT.msgs.slice(-40).map(m=>({...m,action:undefined}))))}catch(e){}}
+const AI_ON=()=>CLOUD&&!!user&&CFG.assistantAI!==false;
+
+/* ---- reading dates, times and subjects out of a sentence ---- */
+const WD=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+function chatDay(t){
+  const T=today();
+  if(/\bday after tomorrow\b/.test(t))return iso(addDays(T,2));
+  if(/\b(tomorrow|tmrw|tmr|tomo)\b/.test(t))return iso(addDays(T,1));
+  if(/\b(today|tonight|now|this evening|this afternoon)\b/.test(t))return iso(T);
+  const ds=datesIn(t);if(ds.length)return ds[0];
+  const m=t.match(/\b(next|this|coming)?\s*(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)(day|nesday|sday|urday|rsday)?\b/);
+  if(m){const wd=WD.findIndex(x=>x.startsWith(m[2].slice(0,3)));let n=(wd-T.getDay()+7)%7;if(n===0&&m[1]!=='this')n=7;if(m[1]==='next'&&n<7&&/next week/.test(t))n+=7;return iso(addDays(T,n))}
+  const inN=t.match(/\bin (\d+) days?\b/);if(inN)return iso(addDays(T,+inN[1]));
+  if(/\bnext week\b/.test(t))return iso(addDays(T,7));
+  return null;
+}
+function chatWeekdays(t){const out=[];const re=/\b(sun|mon|tue|wed|thu|fri|sat)[a-z]*s?\b/g;let m;while((m=re.exec(t)))out.push(WD.findIndex(x=>x.startsWith(m[1])));if(/\bweekdays\b/.test(t))out.push(1,2,3,4,5);if(/\bweekends?\b/.test(t))out.push(6,0);return [...new Set(out)]}
+function hm(h,m,ap,day){h=+h;m=+(m||0);if(h>23||m>59)return null;
+  if(ap){ap=ap[0];if(ap==='p'&&h<12)h+=12;if(ap==='a'&&h===12)h=0}
+  else if(h<=7)h+=12;
+  else if(h<=11&&day&&classesOn(day).length&&h*60<schoolCutoff())h+=12;
+  return h*60+m}
+function chatTimes(t,day){
+  const T='(\\d{1,2})(?:[:.](\\d{2}))?\\s*(am|pm|a\\.m\\.|p\\.m\\.)?';
+  let m=t.match(new RegExp(`(?:from\\s+)?${T}\\s*(?:-|–|—|to|till|until)\\s*${T}`));
+  if(m){let ap1=m[3],ap2=m[6];if(!ap1&&ap2&&+m[1]<=+m[4])ap1=ap2;const s=hm(m[1],m[2],ap1,day),e=hm(m[4],m[5],ap2||ap1,day);if(s!=null&&e!=null&&e>s)return{s,e}}
+  m=t.match(new RegExp(`\\b(?:until|till|til)\\s+${T}`));if(m){const e=hm(m[1],m[2],m[3],day);const n=Math.ceil(nowHM()/5)*5;if(e!=null&&e>n)return{s:n,e,untilOnly:true}}
+  m=t.match(new RegExp(`\\b(?:at|from|@)\\s*${T}`))||t.match(new RegExp(`\\b${T}\\s*(?=for\\b)`))||t.match(/\b(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)\b/);
+  if(m){const s=hm(m[1],m[2],m[3],day);if(s==null)return null;const d=t.match(/\bfor\s+(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minutes)\b/)||t.match(/\bfor\s+(an?|half an?)\s+(hour)\b/);
+    let dur=60;if(d){if(/^an?$/.test(d[1]))dur=60;else if(/half/.test(d[1]))dur=30;else dur=/^h/.test(d[2])?Math.round(+d[1]*60):+d[1]}
+    return{s,e:Math.min(s+dur,24*60-1)}}
+  return null;
+}
+function chatMinutes(t){const m=t.match(/(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours)\b(?:\s*(?:and\s*)?(\d+)\s*(m|min|mins|minutes))?/);if(m)return Math.round(+m[1]*60)+(m[3]?+m[3]:0);const n=t.match(/(\d+)\s*(m|min|mins|minutes)\b/);if(n)return +n[1];if(/half an hour/.test(t))return 30;if(/an hour/.test(t))return 60;return null}
+function chatSubject(t){
+  let best=null,len=0;
+  for(const x of S.subjects){const names=[x.name.toLowerCase(),...(ALIASES.find(g=>g.includes(x.name.toLowerCase()))||[])];
+    for(const n of names){if(n.length<3&&!/\b(cs|pe|it)\b/.test(n))continue;const re=new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b`);if(re.test(t)&&n.length>len){best=x;len=n.length}}}
+  return best;
+}
+const fmtSpan=(s,e)=>`${fromMin(s)}–${fromMin(e)}`;
+const dayWord=d=>d===TD()?'today':d===iso(addDays(today(),1))?'tomorrow':fmtDate(d);
+function cleanTitle(raw){
+  let t=' '+raw+' ';
+  t=t.replace(/\b(i\s+have|i've got|i got|i'm|i am|i will be|i'll be|there is|there's|add|put|schedule|please|can you|could you|going to|gonna|have|got|a|an|my|on|at|from|to|till|until|for|this|next|coming|every|each|weekly|today|tonight|tomorrow|tmrw|day after|in the|evening|afternoon|morning|pm|am|hours?|hrs?|mins?|minutes?|calendar|event|busy|be)\b/gi,' ');
+  t=t.replace(new RegExp(`\\b(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)[a-z]*\\b`,'gi'),' ').replace(/\b\d{1,2}([:.]\d{2})?\b/g,' ').replace(new RegExp(MRE,'gi'),' ');
+  t=t.replace(/[-–—,.!?:;/@]+/g,' ').replace(/\s+/g,' ').trim();
+  if(!t)return '';return t[0].toUpperCase()+t.slice(1);
+}
+
+/* ---- actions the assistant can propose ---- */
+function act(summary,lines,apply){return{summary,lines,apply}}
+function actEvent({title,day,s,e,weekly,kind}){
+  kind=kind||'personal';
+  return act(`Add “${title}” ${weekly?'every '+DOWL[parse(day).getDay()]:dayWord(day)}, ${fmtSpan(s,e)}`,
+    ['That time is taken out of your free time and the plan moves around it.'],
+    ()=>{const ev={id:uid(),title,kind,start:fromMin(s),end:fromMin(e)};if(weekly)ev.dow=[parse(day).getDay()];else ev.day=day;S.events.push(ev);return `Added. ${title} is on the calendar and your study plan has been moved around it.`});
+}
+function actAllDay(day,kind,title){
+  return act(kind==='holiday'?`Mark ${dayWord(day)} as a holiday`:`Mark ${dayWord(day)} as a day away`,
+    [kind==='holiday'?'No classes that day. The whole day becomes study time.':'No study will be planned that day.'],
+    ()=>{S.events.push({id:uid(),title:title||(kind==='holiday'?'Holiday':'Away'),kind,day,allDay:true,start:'00:00',end:'23:59'});return kind==='holiday'?`Done. ${cap(dayWord(day))} is a holiday and the plan uses the free day.`:`Done. Nothing will be planned ${dayWord(day)}.`});
+}
+function actCancel(day,list){
+  return act(`Cancel ${list.length===1?list[0].title+(list[0].tuition?' tuition':''):list.length+' classes'} ${dayWord(day)}`,
+    list.map(c=>`${c.start}–${c.end} · ${c.title}${c.tuition?' (tuition)':''}`).concat(['That time becomes free for study.']),
+    ()=>{for(const x of list){const c=S.classes.find(y=>y.id===x.id);if(c)c.skip=(c.skip||[]).concat(day)}return `Cancelled for ${dayWord(day)}. The free time has been added to your plan.`});
+}
+function actHomework(v){
+  return act(`Add homework: ${v.title}`,[`${sub(v.subject).name} · due ${dayWord(v.due)} · ${fmtMin(v.est)}`,'It will be split into sessions that finish the day before.'],
+    ()=>{S.tasks.push({id:uid(),done:false,priority:diffDays(TD(),v.due)<=1?'high':'med',type:'Homework',...v});return `Added. It's in your plan before ${dayWord(v.due)}.`});
+}
+function actTest(v){
+  const t={...v};const pd=prepDaysFor(t),ph=prepHoursFor(t);
+  return act(`Add test: ${v.title}`,[`${sub(v.subject).name} · ${fmtDate(v.date)}, ${v.time}`,`${ph} h of prep, starting ${fmtDate(iso(addDays(parse(v.date),-pd)))}.`],
+    ()=>{S.tests.push({id:uid(),prep:0,dur:60,...v});return `Added. Prep sessions for ${v.title} are now in your plan.`});
+}
+function actMoveTest(t,date,time){
+  return act(`Move “${t.title}” to ${fmtDate(date)}${time?', '+time:''}`,[`It was on ${fmtDate(t.date)}. The prep sessions will be re-planned.`],
+    ()=>{const x=S.tests.find(y=>y.id===t.id);if(x){x.date=date;if(time)x.time=time}return `Moved. Prep for ${t.title} has been re-planned for ${fmtDate(date)}.`});
+}
+function actSetting(summary,line,fn){return act(summary,[line],()=>{fn();return 'Updated. Your plan has been rebuilt.'})}
+
+/* ---- answers ---- */
+function planFor(day){
+  const bl=blocksOn(day).filter(b=>!b.done),fx=fixedOn(day).filter(e=>!e.allDay&&e.kind!=='class'||e.tuition);
+  const items=[...bl.map(b=>({s:toMin(b.start),t:`${b.start} ${b.title} (${fmtMin(b.min)})`})),...fx.map(e=>({s:toMin(e.start),t:`${e.start} ${e.title}${e.tuition?' tuition':''}`}))].sort((a,b)=>a.s-b.s);
+  return items.map(i=>'• '+i.t).join('\n');
+}
+function answerLocal(t){
+  const T=TD(),nm=nowHM(),P=plan();
+  if(/^(hi|hello|hey|hii+|yo|good (morning|afternoon|evening))\b/.test(t)&&t.length<25)return{text:`Hi${S.settings.name?' '+S.settings.name:''}. Tell me about a change to your day, like “football on Saturday 4 to 6” or “no tuition tomorrow”, or ask what to study next.`};
+  if(/\b(help|what can you do|how do i use|commands)\b/.test(t))return{text:HELP};
+  if(/\b(undo|revert|take that back)\b/.test(t)){if(!CHAT.undo)return{text:'There is nothing to undo.'};return{action:act('Undo the last change',[CHAT.undo.label],()=>{S=normalize(JSON.parse(CHAT.undo.snap));CHAT.undo=null;return 'Undone.'}),noUndo:true}}
+  if(/what (should|do) i (study|do|work on)|what('?s| is) next|study now|next session/.test(t)){
+    const cur=P.blocks.find(b=>!b.done&&b.day===T&&toMin(b.start)<=nm&&toMin(b.end)>nm),nx=P.blocks.find(b=>!b.done&&(b.day>T||(b.day===T&&toMin(b.start)>nm)));
+    const b=cur||nx;if(!b)return{text:'Nothing else is planned. Add homework or a test and I will plan for it.'};
+    return{text:`${cur?'Right now':'Next'}: ${b.title}, ${b.day===T?'today':fmtDate(b.day)} ${b.start}–${b.end} (${fmtMin(b.min)}).`,start:b.key};
+  }
+  if(/(plan|schedule|timetable|what('?s| is)| doing)\b.*\b(today|tomorrow|tmrw|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)|^(today|tomorrow)\??$/.test(t)&&!/\b(add|have|got|cancel|move)\b/.test(t)){
+    const d=chatDay(t)||T;const p=planFor(d);return{text:p?`${cap(dayWord(d))}:\n${p}`:`Nothing is planned ${dayWord(d)}${availOn(d).length?'':', and there is no free time'}.`};
+  }
+  if(/\b(next|upcoming|when('?s| is)( my)?)\b.*\b(test|exam|quiz)s?\b|\btests?\b.*\b(coming|soon)\b/.test(t)){
+    const up=S.tests.filter(x=>x.date>=T).sort((a,b)=>a.date<b.date?-1:1).slice(0,4);
+    if(!up.length)return{text:'No tests are coming up. Tell me one, for example “biology test on 3 Nov”.'};
+    return{text:up.map(x=>{const pr=P.blocks.filter(b=>b.kind==='prep'&&b.ref===x.id);const done=pr.filter(b=>b.done).reduce((a,b)=>a+b.min,0);return `• ${x.title}: ${fmtDate(x.date)} (${diffDays(T,x.date)} days), ${fmtH(done)} of ${prepHoursFor(x)} h prep done`}).join('\n')};
+  }
+  if(/\b(how much|what|which|show|list)\b.*\b(homework|hw)\b|\b(homework|hw) (left|pending|do i have)|^(homework|hw)\??$|\b(homework|hw)\b.*\?$/.test(t)&&!/\b(add|due (on |this |next )?(mon|tue|wed|thu|fri|sat|sun|tomorrow|today|\d))/.test(t)){
+    const o=openTasks().sort(byNext);if(!o.length)return{text:'No homework left.'};
+    return{text:`${o.length} open, about ${fmtH(o.reduce((a,x)=>a+(+x.est||0),0))} in total:\n`+o.slice(0,6).map(x=>`• ${x.title} (${sub(x.subject).name}), due ${dayWord(x.due)}`).join('\n')};
+  }
+  if(/how (much|long) (have i|did i) (study|studied)|study(ing)? (time|hours) (this|so far)/.test(t)){return{text:`This week: ${fmtH(weekMins(0))} of your ${S.settings.goal} h goal. Today: ${fmtMin(minsOn(T))}.`}}
+  if(/\bfree time\b|\bwhen am i free\b|\bam i free\b/.test(t)){const d=chatDay(t)||T;const f=availOn(d);return{text:f.length?`Free ${dayWord(d)}: ${f.map(([a,b])=>fmtSpan(a,b)).join(', ')}.`:`No free time ${dayWord(d)}.`}}
+  return null;
+}
+const HELP=`I can change your plan and answer questions about it. Try:
+• “Football on Saturday 4 to 6”
+• “Badminton every Tuesday 5–6:30”
+• “No tuition tomorrow” or “Physics tuition cancelled Thursday”
+• “I'm busy until 7 today”
+• “Friday is a holiday” or “I'm away on Sunday”
+• “Maths homework due Friday, 45 min”
+• “Biology test on 3 Nov” or “Move my biology test to Monday”
+• “I go to bed at 10:30”
+• “What should I study now?” “What's my plan tomorrow?” “When's my next test?”`;
+
+/* ---- understanding changes ---- */
+function understand(raw){
+  const t=' '+raw.toLowerCase().replace(/[’']/g,"'").replace(/\s+/g,' ').trim()+' ';
+  const q=answerLocal(t.trim());if(q)return q;
+  const T=TD(),day=chatDay(t),subj=chatSubject(t);
+  const isTest=/\b(test|exam|quiz|mid-?term|finals?|assessment|paper)\b/.test(t)&&!/past paper/.test(t);
+  // move a test
+  if(isTest&&/\b(move|moved|change|changed|postpone|postponed|reschedul|shift|shifted|now on|pushed)\b/.test(t)){
+    const cands=S.tests.filter(x=>x.date>=T&&(!subj||x.subject===subj.id));
+    if(!cands.length)return{text:subj?`I couldn't find an upcoming ${subj.name} test.`:'Which test? For example “move my biology test to Friday”.'};
+    const ds=datesIn(t);const nd=ds.length?ds[ds.length-1]:day;if(!nd)return{text:'Which date is it moving to?'};
+    const tm=chatTimes(t,nd);return{action:actMoveTest(cands.sort((a,b)=>a.date<b.date?-1:1)[0],nd,tm&&!tm.untilOnly?fromMin(tm.s):null)};
+  }
+  // add a test
+  if(isTest&&!/\b(how|when|what|which)\b/.test(t)){
+    if(!subj)return{text:'Which subject is the test for?'};if(!day)return{text:`When is the ${subj.name} test? For example “${subj.name.toLowerCase()} test on 3 Nov”.`};
+    const tm=chatTimes(t,day);const big=/\b(exam|mid-?term|final|annual|board)\b/.test(t);
+    const title=`${subj.name} ${/\bquiz\b/.test(t)?'quiz':big?(t.match(/\b(mid-?term|final|annual|board)\b/)||['exam'])[0].replace(/^\w/,c=>c.toUpperCase())+' exam':'test'}`.replace('Mid-term exam','mid-term').replace('Midterm exam','mid-term');
+    return{action:actTest({title,subject:subj.id,date:day,time:tm?fromMin(tm.s):'09:00',dur:big?120:60})};
+  }
+  // homework
+  if(/\b(homework|hw|assignment|worksheet|project|essay|lab report|due)\b/.test(t)){
+    if(!subj)return{text:'Which subject is the homework for?'};
+    const due=day||null;if(!due)return{text:'When is it due?'};
+    const est=chatMinutes(t)||30;let title=raw.replace(/\b(due|takes?|will take|it'?s|about|around|approx\.?)\b.*$/i,'').replace(/^(i have|i've got|i got|add|new)\s+/i,'').trim();if(title.length<4)title=`${subj.name} homework`;
+    return{action:actHomework({title:title[0].toUpperCase()+title.slice(1),subject:subj.id,due,est}),note:chatMinutes(t)?null:'I guessed 30 minutes. Tell me if it will take longer.'};
+  }
+  // cancelled classes / tuition
+  if(/\b(cancel|cancelled|canceled|no|not going|skip|skipping|off)\b.*\b(class|classes|tuition|tution|school|lesson|period)\b|\b(tuition|tution|class)\b.*\b(cancel|cancelled|canceled|off|not happening)\b/.test(t)&&!/\b(holiday)\b/.test(t)){
+    const d=day||T;const all=fixedOn(d).filter(e=>e.kind==='class');
+    if(/\bno school\b|\bschool (is )?(closed|off|cancelled)\b/.test(t))return{action:actAllDay(d,'holiday','No school')};
+    let list=all.filter(c=>(/tuition|tution/.test(t)?c.tuition:true)&&(!subj||c.subject===subj.id));
+    if(!/tuition|tution/.test(t)&&!subj)list=list.filter(c=>!c.tuition);
+    if(!list.length)return{text:`I couldn't find ${subj?subj.name+' ':''}${/tuition/.test(t)?'tuition':'a class'} ${dayWord(d)}.`};
+    return{action:actCancel(d,list)};
+  }
+  // holiday / away
+  if(/\b(holiday|no school|school (is )?(closed|off)|day off|vacation)\b/.test(t)&&day&&!chatTimes(t,day))return{action:actAllDay(day,'holiday',/holiday/.test(t)?cleanTitle(raw)||'Holiday':'No school')};
+  if(/\b(away|out of town|travel|travelling|traveling|trip|not home|sick|unwell)\b/.test(t)&&day&&!chatTimes(t,day))return{action:actAllDay(day,'away',cleanTitle(raw)||'Away')};
+  // settings
+  let m=t.match(/\b(bed|sleep|stop studying|stop|finish studying)\b.*?\b(at|by)\s+(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?/);
+  if(m){const v=hm(m[3],m[4],m[5]||'pm');return{action:actSetting(`Stop studying by ${fromMin(v)}`,'Nothing will be planned after this time.',()=>{S.settings.dayEnd=fromMin(v)})}}
+  m=t.match(/\b(get|reach|am|i'm) home\b.*?\b(at|by|around)\s+(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?/);
+  if(m){const v=hm(m[3],m[4],m[5]);const tr=Math.max(0,v-schoolCutoff());return{action:actSetting(`Start studying from ${fromMin(v)} on school days`,`That allows ${tr} min to get home after school.`,()=>{S.settings.travel=tr;S.settings.hoursSet=true})}}
+  m=t.match(/\bstudy\b.*?(\d+(?:\.\d+)?)\s*(h|hr|hrs|hours?|m|mins?|minutes)\b.*\b(weekdays?|school days?|weekends?|days off|every day|a day|per day|daily)\b/)||t.match(/\b(weekdays?|school days?|weekends?|every day|daily)\b.*?(\d+(?:\.\d+)?)\s*(h|hr|hrs|hours?|m|mins?|minutes)\b/);
+  if(m&&/study/.test(t)){const nums=m.slice(1).filter(Boolean);const n=+nums.find(x=>/^\d/.test(x)),u=nums.find(x=>/^(h|hr|hrs|hour|hours|m|min|mins|minutes)$/.test(x)),w=nums.find(x=>/[a-z]{4,}/.test(x)&&!/^(hour|hours|mins|minutes)$/.test(x));const v=Math.round(/^h/.test(u)?n*60:n);
+    const we=/weekend|days off/.test(w),both=/every day|daily|a day|per day/.test(w);
+    return{action:actSetting(`Plan ${fmtMin(v)} of study ${both?'every day':we?'on weekends and holidays':'on school days'}`,'Homework, test prep and revision fill this time.',()=>{if(both||!we)S.settings.studyDay=v;if(both||we)S.settings.studyWeekend=v})}}
+  // busy / events with a time
+  const d=day||T;const tm=chatTimes(t,d);
+  if(tm){
+    const weekly=/\b(every|each|weekly)\b/.test(t)||/\b(mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)\b/.test(t);
+    let title=cleanTitle(raw);if(!title||/^(i|me|free|not free)$/i.test(title))title='Busy';
+    if(/\b(free|can study|available)\b/.test(t)&&!/\bnot\b/.test(t))return{text:'Free time is worked out from your classes and events. To free up time, cancel the class or delete the event that is in the way, or tell me “no tuition tomorrow”.'};
+    if(weekly){const wds=chatWeekdays(t);if(wds.length>1)return{action:act(`Add “${title}” every ${wds.map(x=>DOWL[x]).join(', ')}, ${fmtSpan(tm.s,tm.e)}`,['Taken out of your free time every week.'],()=>{S.events.push({id:uid(),title,kind:'personal',dow:wds,start:fromMin(tm.s),end:fromMin(tm.e)});return 'Added for every week. The plan has been moved around it.'})}}
+    return{action:actEvent({title,day:d,s:tm.s,e:tm.e,weekly})};
+  }
+  if(/\b(can'?t|cannot|won'?t|not able to) study\b|\bskip (this|the|my) (session|study)/.test(t)){
+    const b=P0().blocks.find(x=>!x.done&&x.day===T&&toMin(x.end)>nowHM());if(!b)return{text:'Nothing else is planned today.'};
+    const s=Math.max(toMin(b.start),Math.ceil(nowHM()/5)*5);return{action:actEvent({title:'Busy',day:T,s,e:toMin(b.end)}),note:'The session will move to your next free slot.'};
+  }
+  return null;
+}
+const P0=()=>plan();
+
+/* ---- AI (when accounts and the assistant service are set up) ---- */
+function aiContext(){
+  const T=TD();
+  return {today:T,weekday:DOWL[today().getDay()],now:fromMin(nowHM()),name:S.settings.name||null,
+    subjects:S.subjects.map(s=>s.name),
+    week:[...Array(7)].map((_,i)=>{const d=iso(addDays(today(),i));return{date:d,day:DOWL[parse(d).getDay()],
+      classes:fixedOn(d).filter(e=>e.kind==='class').map(c=>`${c.start}-${c.end} ${c.title}${c.tuition?' (tuition)':''}`),
+      events:fixedOn(d).filter(e=>e.kind!=='class').map(e=>`${e.allDay?'all day':e.start+'-'+e.end} ${e.title} [${e.kind}]`),
+      plan:blocksOn(d).map(b=>`${b.start}-${b.end} ${b.title}${b.done?' (done)':''}`)}}),
+    tests:S.tests.filter(t=>t.date>=T).map(t=>({title:t.title,subject:sub(t.subject).name,date:t.date,time:t.time,prep_hours:prepHoursFor(t),readiness:t.prep})),
+    homework:openTasks().map(t=>({title:t.title,subject:sub(t.subject).name,due:t.due,minutes:t.est})),
+    settings:{study_school_day_min:S.settings.studyDay,study_day_off_min:S.settings.studyWeekend,stop_by:S.settings.dayEnd,school_finishes:fromMin(schoolCutoff())}};
+}
+function aiAction(a){
+  const g=a.input||{};const subjOf=n=>S.subjects.find(x=>x.name.toLowerCase()===String(n||'').toLowerCase())||chatSubject(' '+String(n||'').toLowerCase()+' ');
+  try{
+    switch(a.name){
+      case 'add_event':return actEvent({title:g.title||'Busy',day:g.date,s:toMin(g.start),e:toMin(g.end),weekly:!!g.weekly});
+      case 'mark_day':return actAllDay(g.date,g.kind==='away'?'away':'holiday',g.title);
+      case 'cancel_classes':{const all=fixedOn(g.date).filter(e=>e.kind==='class');const sj=g.subject?subjOf(g.subject):null;const list=all.filter(c=>(g.tuition_only?c.tuition:true)&&(!sj||c.subject===sj.id));return list.length?actCancel(g.date,list):null}
+      case 'add_homework':{const sj=subjOf(g.subject);return sj?actHomework({title:g.title,subject:sj.id,due:g.due,est:Math.max(5,+g.minutes||30)}):null}
+      case 'add_test':{const sj=subjOf(g.subject);return sj?actTest({title:g.title,subject:sj.id,date:g.date,time:g.time||'09:00',dur:+g.minutes||60}):null}
+      case 'move_test':{const t=S.tests.find(x=>x.title.toLowerCase()===String(g.title||'').toLowerCase())||S.tests.find(x=>x.date>=TD()&&String(g.title||'').toLowerCase().includes(sub(x.subject).name.toLowerCase()));return t?actMoveTest(t,g.date,g.time||null):null}
+      case 'update_settings':return actSetting('Change your study settings',Object.entries(g).map(([k,v])=>`${k.replace(/_/g,' ')}: ${v}`).join(' · '),()=>{if(g.stop_by)S.settings.dayEnd=g.stop_by;if(g.study_school_day_min!=null)S.settings.studyDay=+g.study_school_day_min;if(g.study_day_off_min!=null)S.settings.studyWeekend=+g.study_day_off_min});
+    }
+  }catch(e){}
+  return null;
+}
+async function askAI(text){
+  const hist=CHAT.msgs.filter(m=>m.role&&m.text).slice(-12).map(m=>({role:m.role==='me'?'user':'assistant',content:m.text}));
+  const {data,error}=await sb.functions.invoke(CFG.assistantFunction||'assistant',{body:{messages:hist,context:aiContext()}});
+  if(error)throw error;return data;
+}
+
+/* ---- conversation ---- */
+async function chatSend(text){
+  text=String(text||'').trim();if(!text||CHAT.busy)return;
+  CHAT.msgs.push({id:++CHAT.seq,role:'me',text});
+  let r=null;try{r=understand(text)}catch(e){r=null}
+  if(r){const m={id:++CHAT.seq,role:'bot',text:r.text||'',start:r.start||null};if(r.action){m.action=r.action;m.pending=true;m.noUndo=!!r.noUndo;m.text=r.note||''}CHAT.msgs.push(m);chatSave();renderChat();return}
+  if(AI_ON()){
+    CHAT.busy=true;renderChat();
+    try{const d=await askAI(text);
+      const acts=(d.actions||[]).map(aiAction).filter(Boolean);
+      CHAT.msgs.push({id:++CHAT.seq,role:'bot',text:d.text||''});
+      for(const a of acts)CHAT.msgs.push({id:++CHAT.seq,role:'bot',text:'',action:a,pending:true});
+    }catch(e){CHAT.msgs.push({id:++CHAT.seq,role:'bot',text:'I couldn’t reach the assistant service just now. Changes to your plan still work: try “football Saturday 4 to 6”.'})}
+    CHAT.busy=false;chatSave();renderChat();return;
+  }
+  CHAT.msgs.push({id:++CHAT.seq,role:'bot',text:`I didn't understand that as a change to your plan.\n\n${CLOUD?'Answering subject questions needs the assistant service, which is not set up yet.':'Answering subject questions needs accounts and the assistant service to be set up.'}\n\nType “help” to see what I can do.`});
+  chatSave();renderChat();
+}
+function chatConfirm(id,yes){
+  const m=CHAT.msgs.find(x=>x.id===id);if(!m||!m.pending)return;m.pending=false;
+  if(!yes){m.result='Cancelled.';chatSave();renderChat();return}
+  const snap=JSON.stringify(S);
+  try{const msg=m.action.apply();if(!m.noUndo)CHAT.undo={snap,label:m.action.summary};m.result=msg;m.done=true;touch();render()}
+  catch(e){m.result='That change could not be made.'}
+  chatSave();renderChat();
+}
+function chatMsgHTML(m){
+  if(m.role==='me')return `<div class="cm me">${esc(m.text)}</div>`;
+  let h='';
+  if(m.text)h+=`<div class="cm bot">${esc(m.text).replace(/\n/g,'<br>')}${m.start?`<div class="cm-acts"><button class="btn sm" data-act="chat-start" data-key="${esc(m.start)}" ${F.started?'disabled':''}>${ic('play')}Start timer</button></div>`:''}</div>`;
+  if(m.action||m.summary){const a=m.action||{summary:m.summary,lines:m.lines||[]};m.summary=a.summary;m.lines=a.lines;
+    h+=`<div class="cm card ${m.pending?'':'settled'}"><b>${esc(a.summary)}</b>${(a.lines||[]).map(l=>`<small>${esc(l)}</small>`).join('')}
+      ${m.pending&&m.action?`<div class="cm-acts"><button class="btn sm" data-act="chat-yes" data-id="${m.id}">Confirm</button><button class="btn sec2 sm" data-act="chat-no" data-id="${m.id}">Cancel</button></div>`:m.pending?'<small class="muted">Expired. Ask again.</small>':''}
+      ${m.result?`<div class="cm-res ${m.done?'ok':''}">${esc(m.result)}${m.done&&!m.noUndo&&CHAT.undo&&CHAT.undo.label===a.summary?` <button class="btn ghost sm" style="padding:0;height:auto" data-act="chat-undo">Undo</button>`:''}</div>`:''}</div>`}
+  return h;
+}
+function renderChat(){
+  let fab=$('#chatFab'),pane=$('#chatPane');
+  if(!fab){fab=document.createElement('button');fab.id='chatFab';fab.type='button';fab.setAttribute('data-act','chat-toggle');fab.setAttribute('aria-label','Open assistant');document.body.appendChild(fab)}
+  if(!pane){pane=document.createElement('section');pane.id='chatPane';pane.setAttribute('aria-label','Assistant');document.body.appendChild(pane)}
+  const show=!!S&&document.body.classList.contains('authed');
+  fab.hidden=!show||CHAT.open;pane.hidden=!show||!CHAT.open;
+  fab.innerHTML=`<svg viewBox="0 0 16 16"><path d="M2 3h12v8H7l-3 2.5V11H2z"/></svg><span>Ask Quire</span>`;
+  if(!show||!CHAT.open)return;
+  const sugg=['What should I study now?','What’s my plan tomorrow?','No tuition tomorrow','Football Saturday 4 to 6','When is my next test?','Help'];
+  const list=CHAT.msgs.length?CHAT.msgs.map(chatMsgHTML).join(''):`<div class="cm bot">Hi${S.settings.name?' '+esc(S.settings.name):''}. Tell me about changes to your day and I'll update your plan, or ask me about your schedule.${AI_ON()?' You can also ask me about anything you are studying.':''}</div>`;
+  const keep=$('#chatIn')?.value||'';
+  pane.innerHTML=`<header><div><b>Assistant</b><small>${AI_ON()?'Plan changes and study questions':'Plan changes and questions about your schedule'}</small></div><div style="display:flex;gap:4px">${CHAT.msgs.length?'<button class="icon" data-act="chat-clear" title="Clear conversation" aria-label="Clear conversation">'+ic('del')+'</button>':''}<button class="icon" data-act="chat-toggle" aria-label="Close assistant"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div></header>
+    <div class="cm-list" id="chatList" aria-live="polite">${list}${CHAT.busy?'<div class="cm bot typing"><i></i><i></i><i></i></div>':''}</div>
+    <div class="cm-sugg">${sugg.map(s=>`<button type="button" data-act="chat-sugg">${esc(s)}</button>`).join('')}</div>
+    <form id="chatForm" autocomplete="off"><input class="in" id="chatIn" placeholder="Type a change or a question" value="${esc(keep)}" aria-label="Message"><button class="btn" type="submit" ${CHAT.busy?'disabled':''}>Send</button></form>`;
+  const l=$('#chatList');if(l)l.scrollTop=l.scrollHeight;
+}
+document.addEventListener('click',e=>{
+  const a=e.target.closest('[data-act^="chat-"]');if(!a||!S)return;const k=a.dataset.act;
+  if(k==='chat-toggle'){CHAT.open=!CHAT.open;renderChat();if(CHAT.open)setTimeout(()=>$('#chatIn')?.focus(),30)}
+  if(k==='chat-yes')chatConfirm(+a.dataset.id,true);
+  if(k==='chat-no')chatConfirm(+a.dataset.id,false);
+  if(k==='chat-undo'&&CHAT.undo){S=normalize(JSON.parse(CHAT.undo.snap));CHAT.undo=null;touch();render();CHAT.msgs.push({id:++CHAT.seq,role:'bot',text:'Undone. Your plan is back to how it was.'});chatSave();renderChat()}
+  if(k==='chat-sugg')chatSend(a.textContent);
+  if(k==='chat-clear'){CHAT.msgs=[];CHAT.undo=null;chatSave();renderChat()}
+  if(k==='chat-start'){const b=plan().blocks.find(x=>x.key===a.dataset.key);if(b&&!F.started){F.block={...b};F.blockKey=b.key;F.subject=b.subject;F.len=b.min;F.remaining=b.min*60000;F.accrued=0;tStart()}}
+},true);
+document.addEventListener('submit',e=>{if(e.target.id!=='chatForm')return;e.preventDefault();e.stopImmediatePropagation();const i=$('#chatIn');const v=i.value;i.value='';chatSend(v)},true);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&CHAT.open){CHAT.open=false;renderChat()}});
+
 
 boot();
 })();
