@@ -532,3 +532,7 @@ details.tl-row[open] .tl-a::before{font-size:12.5px}
   .next h3{font-size:19px}
 }
 .hw.nock{grid-template-columns:minmax(0,1fr)}
+/* ---------- v6: tuition ---------- */
+.cal .ev.tuition{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--c) 14%,var(--surface)) 0 5px,color-mix(in srgb,var(--c) 6%,var(--surface)) 5px 10px)}
+.cal .ev.tuition .k{color:var(--heading)}
+.tl-row.tuition .rail i{background:var(--surface);box-shadow:inset 0 0 0 2px var(--c)}

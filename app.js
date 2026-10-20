@@ -79,8 +79,12 @@ function exampleState(name){
 function mergeSubjects(st){
   const map={};
   for(const x of st.subjects){const b=baseName(x.name);if(!b||b===x.name)continue;
-    const tgt=st.subjects.find(y=>y!==x&&y.name.toLowerCase()===b.toLowerCase());
+    const tgt=st.subjects.find(y=>y!==x&&!map[y.id]&&y.name.toLowerCase()===b.toLowerCase());
     if(tgt)map[x.id]=tgt.id;else x.name=b}
+  const grpOf=n=>{n=n.toLowerCase().replace(/[^a-z ]/g,'').trim();return ALIASES.findIndex(g=>g.includes(n))};
+  const school=x=>st.classes.some(c=>c.subject===x.id&&(c.kind?c.kind==='school':toMin(c.start)<15*60));
+  const byG={};for(const x of st.subjects){if(map[x.id])continue;const g=grpOf(x.name);if(g>=0)(byG[g]=byG[g]||[]).push(x)}
+  for(const g in byG){const l=byG[g];if(l.length<2)continue;const tgt=l.find(school)||l[0];for(const x of l)if(x!==tgt)map[x.id]=tgt.id}
   if(!Object.keys(map).length)return;
   const fix=o=>{if(o&&map[o.subject])o.subject=map[o.subject]};
   [st.classes,st.tasks,st.tests,st.log,st.revision,st.doneBlocks,st.events].forEach(a=>a.forEach(fix));
@@ -325,7 +329,7 @@ function dayFlags(day){const evs=S.events.filter(e=>e.allDay&&e.day===day);const
 function classesOn(day,generic){const wd=parse(day).getDay();if(!generic&&dayFlags(day).holiday)return[];return S.classes.filter(c=>c.dow.includes(wd)&&(generic||!(c.skip||[]).includes(day)))}
 function fixedOn(day){
   const wd=parse(day).getDay(),out=[];
-  for(const c of classesOn(day))out.push({id:c.id,src:'class',kind:'class',title:sub(c.subject).name,subject:c.subject,room:c.room,start:c.start,end:c.end});
+  for(const c of classesOn(day))out.push({id:c.id,src:'class',kind:'class',tuition:isTuition(c),title:sub(c.subject).name,subject:c.subject,room:c.room,start:c.start,end:c.end});
   for(const e of S.events)if(e.day===day||(Array.isArray(e.dow)&&e.dow.includes(wd)&&!(e.skip||[]).includes(day)))out.push({...e,src:'event'});
   for(const h of S.holidays)if(h.start<=day&&h.end>=day)out.push({id:h.id,src:'holiday',kind:'holiday',title:h.name,allDay:true,start:'00:00',end:'23:59'});
   for(const t of S.tests)if(t.date===day)out.push({id:t.id,src:'test',kind:'test',title:t.title,subject:t.subject,start:t.time,end:fromMin(toMin(t.time)+(t.dur||60))});
@@ -350,13 +354,18 @@ function freeWindows(day,generic){
   if(+st.dinnerMin>0){const d=toMin(st.dinner);iv=subIv(iv,d,d+(+st.dinnerMin))}
   return iv.filter(([a,b])=>b-a>=10);
 }
-function schoolEnd(cls){
-  const iv=cls.map(c=>[toMin(c.start),toMin(c.end)]).sort((a,b)=>a[0]-b[0]);if(!iv.length)return null;
-  let end=iv[0][1];for(const[a,b] of iv.slice(1)){if(a-end<=60||a<15*60)end=Math.max(end,b);else break}return end;
+let cutCache={v:-1,m:0};
+function autoSchoolEnd(){
+  let m=0;for(const c of S.classes)if(!c.kind&&toMin(c.start)<15*60)m=Math.max(m,toMin(c.end));
+  for(const c of S.classes)if(c.kind==='school')m=Math.max(m,toMin(c.end));
+  return m||15*60+30;
 }
+function schoolCutoff(){if(S.settings.schoolEnd)return toMin(S.settings.schoolEnd);if(cutCache.v!==planVersion)cutCache={v:planVersion,m:autoSchoolEnd()};return cutCache.m}
+const isTuition=c=>c.kind?c.kind==='tuition':toMin(c.start)>=schoolCutoff();
+function schoolEnd(cls){const sc=cls.filter(c=>!isTuition(c));return sc.length?Math.max(...sc.map(c=>toMin(c.end))):null}
 function availOn(day){
   let iv=freeWindows(day);const se=schoolEnd(classesOn(day)),tr=Math.min(30,Math.round((+S.settings.travel||0)/2));
-  for(const x of fixedOn(day))if(!x.allDay){const after=x.kind==='class'&&se!=null&&toMin(x.start)>=se;
+  for(const x of fixedOn(day))if(!x.allDay){const after=!!x.tuition;
     iv=subIv(iv,toMin(x.start)-(x.kind==='class'?(after?tr:0):GAP),toMin(x.end)+(after?tr:GAP))}
   return iv.filter(([a,b])=>b-a>=10);
 }
@@ -392,7 +401,7 @@ function plan(){
     const pk='paper:'+d;
     if(st.paperMin>0&&!doneKeys.has(pk)){
       const soon=S.tests.filter(t=>t.date>=d&&diffDays(d,t.date)<=14).sort((a,b)=>a.date<b.date?-1:1);
-      const sid=soon.length?soon[0].subject:(S.subjects.length?S.subjects[(Math.floor(parse(d)/864e5))%S.subjects.length].id:null);
+      const sid=soon.length?soon[0].subject:(()=>{const ok=S.subjects.filter(x=>revises(x)&&S.classes.some(c=>c.subject===x.id&&!isTuition(c)));const l=ok.length?ok:S.subjects.filter(revises);return l.length?l[Math.floor(parse(d)/864e5)%l.length].id:null})();
       const s=takeLate(fr[d],+st.paperMin);
       if(s)add(d,s,{key:pk,kind:'paper',ref:sid,subject:sid,title:`Past paper: ${sub(sid).name}`});else if(i>0&&freeWindows(d).length)missPaper.push(d)}
   });
@@ -439,10 +448,11 @@ function plan(){
     if(rem>=15)warnings.push({type:'hw',ref:t.id,text:`${fmtMin(rem)} of “${t.title}” doesn't fit before ${t.due<T?'tomorrow':fmtDate(t.due)}. Add free time or lower the estimate.`});
   }
   // 4. Revision sessions: top each day up to the daily study target, favouring subjects with tests coming up.
-  const ids=new Set([...S.classes.map(c=>c.subject),...S.tests.map(t=>t.subject),...S.tasks.map(t=>t.subject)]);
+  const ids=new Set([...S.classes.filter(c=>!isTuition(c)).map(c=>c.subject),...S.tests.map(t=>t.subject),...S.tasks.map(t=>t.subject)]);
   let cand=S.subjects.filter(x=>ids.has(x.id)&&revises(x));if(!cand.length)cand=S.subjects.filter(revises);
   const last={};for(const l of S.log)if(l.subject&&(!last[l.subject]||l.date>last[l.subject]))last[l.subject]=l.date;
   const count={};
+  const tuOn=(d,sid)=>classesOn(d).some(c=>c.subject===sid&&isTuition(c));
   for(const d of days){
     const off=!classesOn(d).length,target=+(off?st.studyWeekend:st.studyDay)||0;if(!target||!cand.length)continue;
     let need=target-blocks.filter(b=>b.day===d&&b.kind!=='read'&&b.kind!=='paper').reduce((a,b)=>a+b.min,0);
@@ -450,7 +460,7 @@ function plan(){
     for(let g=0;g<8&&need>=20;g++){
       const ranked=cand.map(x=>{let sc=1;
         for(const t of S.tests)if(t.subject===x.id&&t.date>d){const n=diffDays(d,t.date);if(n<=21)sc+=(1-(+t.prep||0)/100)*12/(n+1)}
-        sc+=Math.min(7,last[x.id]?Math.max(0,diffDays(last[x.id],d)):7)*.15;sc-=(count[x.id]||0)*.25;if(used.has(x.id))sc-=3;return{x,sc}}).sort((a,b)=>b.sc-a.sc);
+        sc+=Math.min(7,last[x.id]?Math.max(0,diffDays(last[x.id],d)):7)*.15;sc-=(count[x.id]||0)*.25;if(used.has(x.id))sc-=3;if(tuOn(d,x.id))sc-=2.5;else if(tuOn(iso(addDays(parse(d),-1)),x.id))sc-=1;return{x,sc}}).sort((a,b)=>b.sc-a.sc);
       const x=ranked[0].x,len=Math.max(20,Math.min(+st.maxBlock,Math.floor(need/5)*5));
       const slot=takeEarly(fr[d],len)||takeUpTo(fr[d],len,20);if(!slot)break;
       const topic=S.revision.find(r=>r.subject===x.id&&!r.done);
@@ -574,8 +584,8 @@ function timeline(day){
   const rows=[];
   for(const it of items){
     const p=rows[rows.length-1];
-    if(it.t==='fixed'&&it.x.kind==='class'&&p&&p.t==='school'&&it.s-p.e<=45){p.e=Math.max(p.e,it.e);p.list.push(it.x);continue}
-    if(it.t==='fixed'&&it.x.kind==='class'){rows.push({t:'school',s:it.s,e:it.e,list:[it.x]});continue}
+    if(it.t==='fixed'&&it.x.kind==='class'&&!it.x.tuition&&p&&p.t==='school'&&it.s-p.e<=45){p.e=Math.max(p.e,it.e);p.list.push(it.x);continue}
+    if(it.t==='fixed'&&it.x.kind==='class'&&!it.x.tuition){rows.push({t:'school',s:it.s,e:it.e,list:[it.x]});continue}
     rows.push(it);
   }
   if(!rows.length)return `<div class="empty">Nothing planned${isToday?' today':''}.</div>`;
@@ -595,8 +605,8 @@ function timeline(day){
         <div class="tl-sub">${r.list.map(c=>`<div><span class="num">${c.start}–${c.end}</span><span><i class="sq" style="background:${esc(sub(c.subject).color)}"></i>${esc(c.title)}</span><span class="muted">${esc(c.room||'')}</span></div>`).join('')}</div></details>`);
     }else if(r.t==='fixed'){
       const e=r.x;
-      out.push(`<div class="tl-row ${e.kind} ${past?'past':''}" style="--c:${evColor(e)}"><span class="tm num">${e.start}<small>${e.end}</small></span><span class="rail"><i></i></span>
-        <span class="tl-c"><b>${esc(e.title)}</b><small>${KINDS[e.kind]||''}${e.room?' · '+esc(e.room):''}</small></span><span class="tl-a"></span></div>`);
+      out.push(`<div class="tl-row ${e.kind} ${e.tuition?'tuition':''} ${past?'past':''}" style="--c:${evColor(e)}"><span class="tm num">${e.start}<small>${e.end}</small></span><span class="rail"><i></i></span>
+        <span class="tl-c"><b>${esc(e.title)}</b><small>${e.tuition?'Tuition':KINDS[e.kind]||''}${e.room?' · '+esc(e.room):''}</small></span><span class="tl-a"></span></div>`);
     }else{
       const b=r.x,live=F.started&&F.block&&F.block.key===b.key;
       let act;
@@ -824,7 +834,7 @@ function analyseTimetable(rows){
   }
   return {layout:cands[0][0],classes:merged};
 }
-const ALIASES=[['mathematics','maths','math','mat'],['physics','phy','phys'],['chemistry','chem','che'],['biology','bio'],['english','eng'],['english literature','eng lit','literature','english lit'],['english language','eng lang','english lang'],['history','hist'],['geography','geo','geog'],['computer science','computers','comp sci','cs','computing','computer'],['ict','information technology','it'],['economics','eco','econ'],['physical education','pe','games','sports'],['business studies','business','bst'],['accountancy','accounts','acc'],['social studies','sst','social science'],['environmental science','evs','environment'],['french','fr'],['hindi','hin'],['spanish','span'],['art','arts','art and design'],['music','mus']];
+const ALIASES=[['mathematics','maths','math','mat','international math','international maths','international mathematics','intl math','core math','extended math','additional math','add math'],['physics','phy','phys'],['chemistry','chem','che'],['biology','bio'],['english','eng'],['english literature','eng lit','literature','english lit'],['english language','eng lang','english lang'],['history','hist'],['geography','geo','geog'],['computer science','computers','comp sci','cs','computing','computer'],['ict','information technology','it'],['economics','eco','econ'],['physical education','pe','games','sports'],['business studies','business','bst'],['accountancy','accounts','acc'],['social studies','sst','social science'],['environmental science','evs','environment'],['french','fr'],['hindi','hin'],['spanish','span'],['art','arts','art and design'],['music','mus']];
 function matchSubject(name){
   const n=name.toLowerCase().replace(/[^a-z ]/g,'').replace(/\s+/g,' ').trim();
   const exact=S.subjects.find(s=>s.name.toLowerCase()===n);if(exact)return exact;
@@ -882,7 +892,7 @@ async function runImport(kind,payload){
 /* ---- Study hours ---- */
 function hoursSummary(dow){const d=nextDateFor(dow);const w=availGeneric(d);return{w,tot:w.reduce((a,[x,y])=>a+y-x,0)}}
 function nextDateFor(dow){const t=today();return iso(addDays(t,(dow-t.getDay()+7)%7))}
-function availGeneric(day){let iv=freeWindows(day,true);const cs=classesOn(day,true),se=schoolEnd(cs),tr=Math.min(30,Math.round((+S.settings.travel||0)/2));for(const c of cs){const after=se!=null&&toMin(c.start)>=se;iv=subIv(iv,toMin(c.start)-(after?tr:0),toMin(c.end)+(after?tr:0))}for(const e of S.events)if(Array.isArray(e.dow)&&e.dow.includes(parse(day).getDay()))iv=subIv(iv,toMin(e.start)-GAP,toMin(e.end)+GAP);return iv.filter(([a,b])=>b-a>=10)}
+function availGeneric(day){let iv=freeWindows(day,true);const cs=classesOn(day,true),se=schoolEnd(cs),tr=Math.min(30,Math.round((+S.settings.travel||0)/2));for(const c of cs){const after=isTuition(c);iv=subIv(iv,toMin(c.start)-(after?tr:0),toMin(c.end)+(after?tr:0))}for(const e of S.events)if(Array.isArray(e.dow)&&e.dow.includes(parse(day).getDay()))iv=subIv(iv,toMin(e.start)-GAP,toMin(e.end)+GAP);return iv.filter(([a,b])=>b-a>=10)}
 
 function vTimetable(){
   const clsMin=S.classes.reduce((a,c)=>a+c.dow.length*(toMin(c.end)-toMin(c.start)),0);
@@ -897,13 +907,13 @@ function vTimetable(){
     return{head:`<b>${DOWL[d]}</b><span class="num" style="font-size:12px;color:var(--slate)">${showPlan?`${fmtDate(day).slice(4)} · ${fmtMin(pm)} study`:`${fmtMin(hoursSummary(d).tot)} free`}</span>`,
     today:day===TD(),slot:null,
     shade:showPlan?availOn(day):availGeneric(day),
-    items:S.classes.filter(c=>c.dow.includes(d)).map(c=>({key:`tt|${c.id}|${d}`,s:toMin(c.start),e:toMin(c.end),color:sub(c.subject).color,cls:'class',label:c.room||'Class',title:sub(c.subject).name,sub:`${c.start}–${c.end}`}))
+    items:S.classes.filter(c=>c.dow.includes(d)).map(c=>({key:`tt|${c.id}|${d}`,s:toMin(c.start),e:toMin(c.end),color:sub(c.subject).color,cls:isTuition(c)?'class tuition':'class',label:isTuition(c)?'Tuition'+(c.room?' · '+c.room:''):(c.room||'School'),cls2:isTuition(c),title:sub(c.subject).name,sub:`${c.start}–${c.end}`}))
       .concat(S.events.filter(e=>Array.isArray(e.dow)&&e.dow.includes(d)).map(e=>({key:`ttev|${e.id}|${d}`,s:toMin(e.start),e:toMin(e.end),color:'var(--personal)',cls:'personal',label:'Every week',title:e.title,sub:`${e.start}–${e.end}`})))
       .concat(bl.map(b=>({key:`plan|${b.key}|${day}`,s:toMin(b.start),e:toMin(b.end),color:planColor(b),cls:'plan'+(b.done?' done':''),label:PLANL[b.kind],title:b.title,sub:`${b.start}–${b.end}`})))}});
   let sel='';
   if(ui.selEvent&&/^tt/.test(ui.selEvent)){const[k,id,d]=ui.selEvent.split('|');
-    if(k==='tt'){const c=S.classes.find(x=>x.id===id);if(c)sel=`<div class="evdetail"><div><span class="kind">Class · ${c.dow.map(x=>DOW[x]).join(', ')}</span><h3>${esc(sub(c.subject).name)}</h3><div class="muted num" style="font-size:13px">${c.start}–${c.end}${c.room?' · '+esc(c.room):''}</div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">${c.dow.length>1?`<button class="btn sec2 sm" data-act="del-class-day" data-id="${c.id}" data-d="${d}">Remove ${DOWL[+d]} only</button>`:''}<button class="btn danger sm" data-act="del-class" data-id="${c.id}">Delete class</button><button class="btn sec2 sm" data-act="sel-ev" data-key="">Close</button></div></div>`}
+    if(k==='tt'){const c=S.classes.find(x=>x.id===id);if(c)sel=`<div class="evdetail"><div><span class="kind">${isTuition(c)?'Tuition':'School class'} · ${c.dow.map(x=>DOW[x]).join(', ')}</span><h3>${esc(sub(c.subject).name)}</h3><div class="muted num" style="font-size:13px">${c.start}–${c.end}${c.room?' · '+esc(c.room):''}</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sec2 sm" data-act="cls-kind" data-id="${c.id}" data-k="${isTuition(c)?'school':'tuition'}">Mark as ${isTuition(c)?'school class':'tuition'}</button>${c.dow.length>1?`<button class="btn sec2 sm" data-act="del-class-day" data-id="${c.id}" data-d="${d}">Remove ${DOWL[+d]} only</button>`:''}<button class="btn danger sm" data-act="del-class" data-id="${c.id}">Delete class</button><button class="btn sec2 sm" data-act="sel-ev" data-key="">Close</button></div></div>`}
     else{const e=S.events.find(x=>x.id===id);if(e)sel=`<div class="evdetail"><div><span class="kind personal">Every ${e.dow.map(x=>DOWL[x]).join(', ')}</span><h3>${esc(e.title)}</h3><div class="muted num" style="font-size:13px">${e.start}–${e.end}</div></div><div style="display:flex;gap:8px"><button class="btn danger sm" data-act="del-ev" data-id="${e.id}">Delete</button><button class="btn sec2 sm" data-act="sel-ev" data-key="">Close</button></div></div>`}}
   const P=ui.preview;
   const impTab=ui.impTab;
@@ -956,10 +966,11 @@ function vTimetable(){
   <section class="sec">
     <div class="sh"><h2>How your free time is worked out</h2>${ui.flash==='hours'?'<span class="ok">Saved. Free time and the plan have been updated.</span>':''}</div>
     <form id="hoursForm" class="hours-rules" autocomplete="off">
-      <p>On school days, study time starts when the school day ends, plus <input class="in num inl" type="number" id="hr-travel" min="0" max="180" step="5" value="${st.travel}"> min to get home.</p>
+      <p>School finishes at <input class="in num inl" type="time" id="hr-school" value="${fromMin(schoolCutoff())}">. Classes after this are counted as tuition.</p>
+      <p>On school days, study time starts when school finishes, plus <input class="in num inl" type="number" id="hr-travel" min="0" max="180" step="5" value="${st.travel}"> min to get home.</p>
       <p>On days without classes, start at <input class="in num inl" type="time" id="hr-start" value="${st.dayStart}">, with lunch at <input class="in num inl" type="time" id="hr-lunch" value="${st.lunch}">.</p>
       <p>Stop studying by <input class="in num inl" type="time" id="hr-end" value="${st.dayEnd}">. Dinner at <input class="in num inl" type="time" id="hr-dinner" value="${st.dinner}"> for <input class="in num inl" type="number" id="hr-dmin" min="0" max="120" step="5" value="${st.dinnerMin}"> min.</p>
-      <p class="muted" style="font-size:12.5px">Classes more than an hour after school ends, such as tuition, only block their own time plus travel. Events and tests are taken out of free time on their day.</p>
+      <p class="muted" style="font-size:12.5px">Tuition only blocks its own time, plus travel each way. You can switch any class between school and tuition by tapping it in the week above. Events and tests are taken out of free time on their day.</p>
       <div><button class="btn" type="submit">Save</button></div>
     </form>
   </section>`;
@@ -1087,7 +1098,7 @@ function evColor(e){if(e.src==='plan')return planColor(e);return e.kind==='test'
 function dayCol(day,opts={}){
   const T=TD(),x=parse(day);
   const items=[];
-  for(const e of fixedOn(day)){if(e.allDay)continue;items.push({key:`${e.src}|${e.id}|${day}`,s:toMin(e.start),e:toMin(e.end),color:evColor(e),cls:e.kind,label:KINDS[e.kind],title:e.title,sub:`${e.start}–${e.end}${e.room?' · '+e.room:''}`})}
+  for(const e of fixedOn(day)){if(e.allDay)continue;items.push({key:`${e.src}|${e.id}|${day}`,s:toMin(e.start),e:toMin(e.end),color:evColor(e),cls:e.kind+(e.tuition?' tuition':''),label:e.tuition?'Tuition':KINDS[e.kind],title:e.title,sub:`${e.start}–${e.end}${e.room?' · '+e.room:''}`})}
   for(const b of blocksOn(day))items.push({key:`plan|${b.key}|${day}`,s:toMin(b.start),e:toMin(b.end),color:planColor(b),cls:'plan'+(b.done?' done':''),label:PLANL[b.kind],title:b.title,sub:`${b.start}–${b.end}`});
   const allDay=fixedOn(day).filter(e=>e.allDay).map(e=>({key:`${e.src}|${e.id}|${day}`,title:e.title,color:e.kind==='holiday'?'var(--gold)':e.kind==='away'?'var(--red)':'var(--school)'}));
   return{head:opts.head||`<b>${DOW[x.getDay()]}</b><span class="num">${x.getDate()}</span>`,today:day===T,slot:day,allDay,shade:availOn(day),items};
@@ -1097,7 +1108,7 @@ function detailPanel(){
   const[src,id,day]=ui.selEvent.split('|');const P=plan();
   const e=src==='plan'?P.blocks.find(b=>b.key===id):fixedOn(day).find(x=>x.id===id&&x.src===src);
   if(!e)return '';
-  const lbl=src==='plan'?PLANL[e.kind]:KINDS[e.kind];
+  const lbl=src==='plan'?PLANL[e.kind]:e.tuition?'Tuition':KINDS[e.kind];
   let acts='';
   if(src==='plan')acts=e.done?`<button class="btn sec2 sm" data-act="block-undo" data-key="${esc(id)}">Mark not done</button>`:`<button class="btn sm" data-act="focus-block" data-key="${esc(id)}">${ic('play')}Start focus</button><button class="btn sec2 sm" data-act="block-done" data-key="${esc(id)}">Mark done</button>`;
   else if(src==='test')acts='<a class="btn sec2 sm" href="#tests">Edit in Tests</a>';
@@ -1414,6 +1425,7 @@ document.addEventListener('click',e=>{
     case 'hol-apply':{const n=ui.holPreview.list.length;for(const h of ui.holPreview.list)if(!S.holidays.some(x=>x.start===h.start&&x.end===h.end))S.holidays.push({id:uid(),...h});ui.holPreview=null;touch();ui.holMsg='';render();break}
     case 'hol-cancel':ui.holPreview=null;render();break;
     case 'del-hol':S.holidays=S.holidays.filter(h=>h.id!==id);touch();render();break;
+    case 'cls-kind':{const c=S.classes.find(x=>x.id===id);if(c){c.kind=a.dataset.k}touch();render();break}
     case 'ttplan':ui.ttPlan=a.dataset.v==='1';ui.selEvent=null;render();break;
     case 'imptab':ui.impTab=a.dataset.t;ui.impMsg='';render();break;
     case 'imp-paste':runImport('paste',$('#clsPaste').value);break;
@@ -1494,7 +1506,7 @@ document.addEventListener('submit',e=>{
   if(f.id==='clsForm'){if(!ui.pick.cls.length){$('#clsMsg').style.color='var(--red)';$('#clsMsg').textContent='Choose at least one day.';return}if(!timesOk('#cf-s','#cf-e',f))return;
     const s=$('#cf-s').value,en=$('#cf-e').value;S.classes.push({id:uid(),subject:$('#cf-sub').value,dow:[...ui.pick.cls],start:s,end:en,room:$('#cf-room').value.trim()});
     touch();render();const ns=$('#cf-s'),ne=$('#cf-e');if(ns){ns.value=en;ne.value=fromMin(toMin(en)+(toMin(en)-toMin(s)))}}
-  if(f.id==='hoursForm'){const st=S.settings;st.travel=Math.max(0,Math.min(180,Math.round(+$('#hr-travel').value||0)));st.dayStart=$('#hr-start').value||'09:30';st.lunch=$('#hr-lunch').value||'13:00';st.dayEnd=$('#hr-end').value||'21:30';st.dinner=$('#hr-dinner').value||'20:00';st.dinnerMin=Math.max(0,Math.min(120,Math.round(+$('#hr-dmin').value||0)));st.hoursSet=true;touch();ui.flash='hours';render()}
+  if(f.id==='hoursForm'){const st=S.settings;const hs=$('#hr-school').value;if(hs&&toMin(hs)!==schoolCutoff())st.schoolEnd=hs;st.travel=Math.max(0,Math.min(180,Math.round(+$('#hr-travel').value||0)));st.dayStart=$('#hr-start').value||'09:30';st.lunch=$('#hr-lunch').value||'13:00';st.dayEnd=$('#hr-end').value||'21:30';st.dinner=$('#hr-dinner').value||'20:00';st.dinnerMin=Math.max(0,Math.min(120,Math.round(+$('#hr-dmin').value||0)));st.hoursSet=true;touch();ui.flash='hours';render()}
   if(f.id==='holLink'){runHolImport('link',$('#hol-url').value.trim())}
   if(f.id==='holForm'){const a=$('#hf-s').value,b=$('#hf-e').value||a;if(!a){f.reportValidity();return}S.holidays.push({id:uid(),name:$('#hf-name').value.trim()||'School holiday',start:a<=b?a:b,end:a<=b?b:a});touch();render()}
   if(f.id==='impLink'){ui.impUrl=$('#imp-url').value.trim();runImport('link',ui.impUrl)}
