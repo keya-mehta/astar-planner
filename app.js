@@ -204,7 +204,7 @@ function migrateV1(){try{const r=localStorage.getItem('quire.v1');return r?norma
 /* =========================================================
    Subject types and test lead time
    ========================================================= */
-const STYPES={science:['Science or maths',14],humanities:['Humanities',7],language:['Language',5],other:['Other',7]};
+const STYPES={science:['Science or maths',14,5],humanities:['Humanities',7,4],language:['Language',5,3],other:['Other',7,3]};
 function classify(name){
   const n=String(name||'').toLowerCase();
   if(/math|physic|chem|bio|science|computer|comp sci|\bcs\b|\bict\b|econom|account|statistic|electronic|engineer/.test(n))return 'science';
@@ -218,6 +218,8 @@ const revises=s=>s.revise!=null?!!s.revise:!NONACAD.test(s.name);
 const baseName=n=>String(n||'').replace(/\s*[\(\[].*$/,'').replace(/\s+(\d+[a-z]?|[a-z]\d*|set \w+|hl|sl)$/i,'').replace(/\s+/g,' ').trim();
 const subLead=s=>Math.max(1,Math.min(28,+(s.prepDays??STYPES[subType(s)][1])||7));
 const isBigTest=t=>(+t.dur||0)>=90||/exam|mid-?term|final|board|annual|term[- ]end|half[- ]yearly|pre-?board/i.test(t.title||'');
+const subHours=s=>Math.max(.5,Math.min(40,+(s.prepHours??STYPES[subType(s)][2])||3));
+function prepHoursFor(t){if(t.hours)return +t.hours;const h=subHours(sub(t.subject));return isBigTest(t)?Math.round(h*1.5*2)/2:h}
 function prepDaysFor(t){const base=subLead(sub(t.subject));return Math.min(28,isBigTest(t)?Math.round(base*1.5):base)}
 
 /* =========================================================
@@ -405,21 +407,28 @@ function plan(){
       const s=takeLate(fr[d],+st.paperMin);
       if(s)add(d,s,{key:pk,kind:'paper',ref:sid,subject:sid,title:`Past paper: ${sub(sid).name}`});else if(i>0&&freeWindows(d).length)missPaper.push(d)}
   });
-  // 2. Test preparation: a session on each of the days before a test.
+  // 2. Test preparation: a total number of hours per test, spread over the lead-up and building towards the test.
   const tests=S.tests.filter(t=>t.date>=T).sort((a,b)=>a.date<b.date?-1:1);
   for(const t of tests){
-    let missed=0;
-    const N=prepDaysFor(t);
-    for(let i=N;i>=1;i--){
-      const d=iso(addDays(parse(t.date),-i));if(d<T||!fr[d])continue;
-      const key=`prep:${t.id}:${d}`;if(doneKeys.has(key))continue;
-      const off=!classesOn(d).length,base=+st.prepMin;
-      const min=i<=2?base+15:i<=7?base:Math.max(20,base-5);
-      const len=off&&i<=7?min+15:min;
-      const s=takeEarly(fr[d],len)||takeUpTo(fr[d],len,20);
-      if(s)add(d,s,{key,kind:'prep',ref:t.id,subject:t.subject,title:`Prep: ${t.title}`});else if(d!==T)missed++;
+    const N=prepDaysFor(t),need=Math.round(prepHoursFor(t)*60);
+    const doneM=[...S.doneBlocks,...pre].filter(b=>b.kind==='prep'&&b.ref===t.id).reduce((a,b)=>a+b.min,0);
+    let rem=Math.max(0,need-doneM);if(rem<10)continue;
+    const dl=[];
+    for(let i=N;i>=1;i--){const d=iso(addDays(parse(t.date),-i));if(d<T||!fr[d])continue;
+      dl.push({d,w:(1+2*(N-i)/Math.max(1,N-1))*(classesOn(d).length?1:1.6)*(d===T?.6:1)})}
+    for(let k=0;k<dl.length&&rem>0;k++){
+      const x=dl[k],Wr=dl.slice(k).reduce((a,y)=>a+y.w,0);
+      let want=Math.min(150,Math.round(rem*x.w/Wr/5)*5);
+      if(k===dl.length-1)want=Math.min(rem,180);
+      if(want<20){if(rem<=25)want=rem;else continue}
+      while(want>=10&&rem>=10){
+        const piece=want<=75?want:Math.min(60,want-20);
+        const sl=takeEarly(fr[x.d],piece)||takeUpTo(fr[x.d],piece,20);if(!sl)break;
+        add(x.d,sl,{key:`prep:${t.id}:${x.d}:${sl[0]}`,kind:'prep',ref:t.id,subject:t.subject,title:`Prep: ${t.title}`});
+        const m=sl[1]-sl[0];rem-=m;want-=m;
+      }
     }
-    if(missed)warnings.push({type:'prep',text:`${missed} prep ${missed===1?'session':'sessions'} for “${t.title}” could not fit. Add free time in the ${N} days before ${fmtDate(t.date)}.`});
+    if(rem>=20)warnings.push({type:'prep',ref:t.id,text:`${fmtMin(rem)} of the ${fmtH(need)} prep for “${t.title}” doesn't fit before ${fmtDate(t.date)}. Add free time, or start earlier in Settings → Subjects.`});
   }
   // 3. Homework, earliest deadline first, spread across the days before it is due.
   const tasks=openTasks().sort(byNext);
@@ -681,7 +690,7 @@ function vDashboard(){
         <div class="sh"><h2>Upcoming tests</h2><a class="aside" href="#tests">All tests</a></div>
         ${upTests.slice(0,4).map(t=>{const n=diffDays(T,t.date),pd=prepDaysFor(t),pr=P.blocks.filter(b=>b.kind==='prep'&&b.ref===t.id),ps=iso(addDays(parse(t.date),-pd));return `<div class="cd"><div class="n num ${n<=2?'soon':''}">${n}<small>${n===1?'day':'days'}</small></div>
           <div class="x">${esc(t.title)}<small>${esc(sub(t.subject).name)} · ${fmtDate(t.date)}</small>
-          <div class="bar gold" style="margin:7px 0 4px"><span style="width:${t.prep}%"></span></div><small>${ps>T?`Prep starts ${fmtDate(ps)}`:`${pr.filter(b=>b.done).length} of ${pr.length} prep sessions done`} · ready ${t.prep}%</small></div></div>`}).join('')||'<div class="empty">No tests scheduled. <a href="#tests">Add one</a>.</div>'}
+          <div class="bar gold" style="margin:7px 0 4px"><span style="width:${t.prep}%"></span></div><small>${fmtH(pr.filter(b=>b.done).reduce((a,b)=>a+b.min,0))} of ${prepHoursFor(t)} h prep done${ps>T?` · starts ${fmtDate(ps)}`:''} · ready ${t.prep}%</small></div></div>`}).join('')||'<div class="empty">No tests scheduled. <a href="#tests">Add one</a>.</div>'}
       </section>
       <section class="sec">
         <div class="sh"><h2>Homework due</h2><a class="aside" href="#tasks">${open.length?`All ${open.length}`:'Add'}</a></div>
@@ -1037,10 +1046,10 @@ function vTests(){
     <td class="title">${esc(t.title)}<small>${fmtMin(t.dur||60)}</small></td><td>${subjMark(t.subject)}</td>
     <td class="num">${fmtDate(t.date)}<small class="muted" style="display:block;font-size:11.5px">${t.time}</small></td>
     <td class="r num ${n<=2?'red':''}">${n===0?'Today':n+' d'}</td>
-    <td class="num hide-sm">${pr.filter(b=>b.done).length} / ${pr.length} done<small class="muted" style="display:block;font-size:11.5px">From ${fmtDate(iso(addDays(parse(t.date),-prepDaysFor(t))))} · ${prepDaysFor(t)} days · ${fmtH(pr.reduce((a,b)=>a+b.min,0))}</small></td>
+    <td class="num hide-sm"><span style="display:inline-flex;align-items:center;gap:6px"><input class="in num" type="number" min="0.5" max="60" step="0.5" style="width:64px;height:28px" value="${prepHoursFor(t)}" data-thours="${t.id}" aria-label="Hours of prep">h</span><small class="muted" style="display:block;font-size:11.5px;margin-top:3px">${fmtH(pr.filter(b=>b.done).reduce((a,b)=>a+b.min,0))} done · from ${fmtDate(iso(addDays(parse(t.date),-prepDaysFor(t))))}</small></td>
     <td style="min-width:160px"><div style="display:flex;gap:10px;align-items:center"><input class="range" type="range" min="0" max="100" step="5" value="${t.prep}" data-prep="${t.id}" aria-label="How prepared"><span class="num muted" style="width:34px;text-align:right" id="pp-${t.id}">${t.prep}%</span></div></td>
     <td class="r"><span class="rowact"><button class="icon" data-act="del-test" data-id="${t.id}" aria-label="Delete">${ic('del')}</button></span></td></tr>`};
-  return `<div class="phead"><div><h1>Tests</h1><div class="sub">Prep starts ${STYPES.science[1]} days ahead for sciences and maths, ${STYPES.humanities[1]} for humanities and ${STYPES.language[1]} for languages, with 50% longer for exams. Sessions get longer as the test gets closer. Change the lead time for each subject in Settings.</div></div>
+  return `<div class="phead"><div><h1>Tests</h1><div class="sub">Each test gets a total amount of study, spread over the days before it and building up towards the test: ${STYPES.science[2]} h from ${STYPES.science[1]} days out for sciences and maths, ${STYPES.humanities[2]} h from ${STYPES.humanities[1]} days for humanities, ${STYPES.language[2]} h from ${STYPES.language[1]} days for languages. Exams get 50% more. Change the hours for any test here, or for a subject in Settings.</div></div>
     <dl class="overview num"><div><dt>Upcoming</dt><dd>${up.length}</dd></div><div><dt>Within 7 days</dt><dd>${up.filter(t=>diffDays(T,t.date)<=7).length}</dd></div><div><dt>Average readiness</dt><dd>${avg}%</dd></div></dl></div>
   <div class="formhead"><span class="label">Add test</span></div>
   <form class="form" id="testForm" autocomplete="off">
@@ -1049,11 +1058,12 @@ function vTests(){
     <label class="field"><span>Date</span><input class="in num" type="date" id="xf-date" required value="${iso(addDays(today(),10))}"></label>
     <label class="field"><span>Start</span><input class="in num" type="time" id="xf-time" value="09:00"></label>
     <label class="field"><span>Length (min)</span><input class="in num" type="number" min="10" step="5" id="xf-dur" value="60"></label>
+    <label class="field"><span>Study needed (h)</span><input class="in num" type="number" min="0.5" max="60" step="0.5" id="xf-hours" placeholder="Auto"></label>
     <label class="field"><span>Readiness (%)</span><input class="in num" type="number" min="0" max="100" step="5" id="xf-prep" value="0"></label>
     <div class="acts"><button class="btn" type="submit">Add</button></div>
   </form>
   <section class="sec" style="border:0"><div class="sh"><h2>Upcoming</h2></div>
-  <div class="tw"><table><thead><tr><th>Test</th><th>Subject</th><th>Date</th><th class="r">In</th><th class="hide-sm">Prep sessions</th><th>Readiness</th><th></th></tr></thead>
+  <div class="tw"><table><thead><tr><th>Test</th><th>Subject</th><th>Date</th><th class="r">In</th><th class="hide-sm">Study needed</th><th>Readiness</th><th></th></tr></thead>
   <tbody>${up.map(row).join('')||'<tr><td colspan="7" class="empty">No upcoming tests.</td></tr>'}</tbody></table></div></section>
   ${past.length?`<section class="sec"><div class="sh"><h2>Past</h2></div><div class="tw"><table><tbody>${past.reverse().map(t=>`<tr><td class="title">${esc(t.title)}</td><td>${subjMark(t.subject)}</td><td class="num">${fmtDate(t.date)}</td><td class="r"><button class="icon" data-act="del-test" data-id="${t.id}" aria-label="Delete">${ic('del')}</button></td></tr>`).join('')}</tbody></table></div></section>`:''}`;
 }
@@ -1305,18 +1315,19 @@ function vSettings(){
       <button class="btn" type="submit">Save</button></div>${ui.flash==='prof'?'<span class="ok">Saved.</span>':''}</form></div>
   <div class="set"><div><h2>Planning rules</h2><p>How the automatic plan is built. Set reading or past papers to 0 to turn them off.</p></div>
     <form class="body" id="ruleForm"><div class="row">
-      ${num('rf-read','Reading per day (min)',st.readMin,0,120)}${num('rf-paper','Past papers per day (min)',st.paperMin,0,120)}${num('rf-prep','Test prep session (min)',st.prepMin,10,180)}
+      ${num('rf-read','Reading per day (min)',st.readMin,0,120)}${num('rf-paper','Past papers per day (min)',st.paperMin,0,120)}
     </div><div class="row">
       ${num('rf-sday','Study per school day (min)',st.studyDay,0,600,15,190)}${num('rf-swe','Study per day off (min)',st.studyWeekend,0,720,15,190)}</div><div class="row">${num('rf-block','Longest homework block (min)',st.maxBlock,15,180,5,190)}${num('rf-hor','Plan ahead (days)',st.horizon,7,42,1)}
       <button class="btn" type="submit">Save rules</button></div>
       <span class="muted" style="font-size:12.5px">Prep sessions in the last two days before a test are 15 minutes longer. Past papers follow the subject of your next test.</span>
       ${ui.flash==='rules'?'<span class="ok">Saved. The plan has been rebuilt.</span>':''}</form></div>
-  <div class="set"><div><h2>Subjects</h2><p>Each subject keeps one colour everywhere. The type sets how many days before a test the prep starts, and you can change the number of days. Untick Revise for things like Assembly or PE so no revision is planned for them.</p></div>
+  <div class="set"><div><h2>Subjects</h2><p>Each subject keeps one colour everywhere. The type sets when test prep starts and how many hours it gets in total. You can change both. Untick Revise for things like Assembly or PE so no revision is planned for them.</p></div>
     <div class="body">${S.subjects.map(s=>{const used=S.tasks.some(t=>t.subject===s.id)||S.tests.some(t=>t.subject===s.id)||S.classes.some(t=>t.subject===s.id);return `<div class="row" style="align-items:center">
       <input type="color" class="sw" value="${esc(s.color)}" data-color="${s.id}" aria-label="Colour for ${esc(s.name)}">
       <input class="in" style="flex:1 1 180px;width:auto" value="${esc(s.name)}" data-sname="${s.id}" aria-label="Subject name">
       <select class="in" style="width:150px" data-stype="${s.id}" aria-label="Subject type">${Object.entries(STYPES).map(([k,[l]])=>`<option value="${k}" ${subType(s)===k?'selected':''}>${l}</option>`).join('')}</select>
       <label class="ckl" style="font-size:12.5px;color:var(--slate);display:inline-flex;align-items:center;gap:6px"><input class="in num" type="number" min="1" max="28" style="width:60px" value="${subLead(s)}" data-slead="${s.id}" aria-label="Days of prep">days</label>
+      <label class="ckl" style="font-size:12.5px;color:var(--slate);display:inline-flex;align-items:center;gap:6px"><input class="in num" type="number" min="0.5" max="40" step="0.5" style="width:64px" value="${subHours(s)}" data-shours="${s.id}" aria-label="Hours of prep per test">h per test</label>
       <label class="ckl" style="font-size:12.5px;display:inline-flex;align-items:center;gap:6px"><input type="checkbox" class="ck" data-srev="${s.id}" ${revises(s)?'checked':''}>Revise</label>
       <button class="icon" data-act="del-sub" data-id="${s.id}" ${used?'disabled title="Used by classes, homework or tests"':''} aria-label="Remove subject" style="${used?'opacity:.3;cursor:not-allowed':''}">${ic('del')}</button></div>`}).join('')}
       <form class="row" id="subForm" autocomplete="off"><input type="color" class="sw" id="nf-color" value="${PALETTE[S.subjects.length%PALETTE.length]}" aria-label="Colour"><input class="in" style="flex:1 1 200px;width:auto" id="nf-name" required placeholder="Add a subject"><button class="btn sec2" type="submit">Add</button></form></div></div>
@@ -1464,7 +1475,9 @@ document.addEventListener('change',e=>{
   if(el.dataset.prep){const t=S.tests.find(x=>x.id===el.dataset.prep);if(t){t.prep=+el.value;touch()}return}
   if(el.dataset.color){const s=sub(el.dataset.color);s.color=el.value;touch();return}
   if(el.dataset.srev){const x=S.subjects.find(z=>z.id===el.dataset.srev);if(x){x.revise=el.checked;touch()}return}
-  if(el.dataset.stype){const x=S.subjects.find(z=>z.id===el.dataset.stype);if(x){x.type=el.value;delete x.prepDays;touch();render()}return}
+  if(el.dataset.stype){const x=S.subjects.find(z=>z.id===el.dataset.stype);if(x){x.type=el.value;delete x.prepDays;delete x.prepHours;touch();render()}return}
+  if(el.dataset.shours){const x=S.subjects.find(z=>z.id===el.dataset.shours);if(x){x.prepHours=Math.max(.5,Math.min(40,+el.value||3));touch()}return}
+  if(el.dataset.thours){const t=S.tests.find(z=>z.id===el.dataset.thours);if(t){const v=+el.value;if(v>0)t.hours=Math.min(60,v);else delete t.hours;touch();render()}return}
   if(el.dataset.slead){const x=S.subjects.find(z=>z.id===el.dataset.slead);if(x){x.prepDays=Math.max(1,Math.min(28,Math.round(+el.value||7)));touch()}return}
   if(el.dataset.sname){const s=S.subjects.find(x=>x.id===el.dataset.sname);if(s&&el.value.trim()){s.name=el.value.trim();touch()}return}
   if(el.id==='tsub'){ui.taskF.subject=el.value;$('#tbody').innerHTML=tasksBody();return}
@@ -1498,7 +1511,7 @@ document.addEventListener('submit',e=>{
     if(!v.title||!v.due){f.reportValidity();return}
     if(ui.editTask){Object.assign(S.tasks.find(t=>t.id===ui.editTask),v);ui.editTask=null}else S.tasks.push({id:uid(),done:false,...v});
     touch();render();$('#tf-title')?.focus()}
-  if(f.id==='testForm'){const v={id:uid(),title:$('#xf-title').value.trim(),subject:$('#xf-sub').value,date:$('#xf-date').value,time:$('#xf-time').value||'09:00',dur:Math.max(10,+$('#xf-dur').value||60),prep:Math.min(100,Math.max(0,+$('#xf-prep').value||0))};if(!v.title||!v.date){f.reportValidity();return}S.tests.push(v);touch();render()}
+  if(f.id==='testForm'){const v={id:uid(),title:$('#xf-title').value.trim(),subject:$('#xf-sub').value,date:$('#xf-date').value,time:$('#xf-time').value||'09:00',dur:Math.max(10,+$('#xf-dur').value||60),prep:Math.min(100,Math.max(0,+$('#xf-prep').value||0))};const hv=+$('#xf-hours').value;if(hv>0)v.hours=Math.min(60,hv);if(!v.title||!v.date){f.reportValidity();return}S.tests.push(v);touch();render()}
   if(f.id==='evForm'){const kind=$('#ef-kind').value,day=$('#ef-day').value,title=$('#ef-title').value.trim();if(!title||!day){f.reportValidity();return}
     if(kind==='holiday'||kind==='away')S.events.push({id:uid(),title,kind,day,allDay:true,start:'00:00',end:'23:59'});
     else{if(!timesOk('#ef-s','#ef-e',f))return;const ev={id:uid(),title,kind,start:$('#ef-s').value,end:$('#ef-e').value};if($('#ef-rep').checked)ev.dow=[parse(day).getDay()];else ev.day=day;S.events.push(ev)}
@@ -1514,7 +1527,7 @@ document.addEventListener('submit',e=>{
     if(!F.started){F.len=S.settings.focusLen;F.remaining=F.len*60000}touch();ui.flash='prof';render()}
   if(f.id==='ruleForm'){const st=S.settings,n=(id,lo,hi,d)=>Math.min(hi,Math.max(lo,Math.round(+$(id).value)))||d;
     st.readMin=Math.min(120,Math.max(0,Math.round(+$('#rf-read').value||0)));st.paperMin=Math.min(120,Math.max(0,Math.round(+$('#rf-paper').value||0)));
-    st.prepMin=n('#rf-prep',10,180,30);st.studyDay=Math.min(600,Math.max(0,Math.round(+$('#rf-sday').value||0)));st.studyWeekend=Math.min(720,Math.max(0,Math.round(+$('#rf-swe').value||0)));st.maxBlock=n('#rf-block',15,180,45);st.horizon=n('#rf-hor',7,42,21);
+    st.studyDay=Math.min(600,Math.max(0,Math.round(+$('#rf-sday').value||0)));st.studyWeekend=Math.min(720,Math.max(0,Math.round(+$('#rf-swe').value||0)));st.maxBlock=n('#rf-block',15,180,45);st.horizon=n('#rf-hor',7,42,21);
     touch();ui.flash='rules';render()}
   if(f.id==='subForm'){const n=$('#nf-name').value.trim();if(!n)return;S.subjects.push({id:uid(),name:n,color:$('#nf-color').value});touch();render()}
   if(f.id==='revForm'){const t=$('#rf-topic').value.trim();if(!t)return;S.revision.push({id:uid(),subject:$('#rf-sub').value,topic:t,done:false});touch();render()}
