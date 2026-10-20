@@ -38,11 +38,11 @@ const PALETTE=['#244B75','#3E6E72','#8A6A3A','#577A4F','#7B4F6B','#8C5545','#4F5
 /* =========================================================
    Data
    ========================================================= */
-const DEFAULT_SETTINGS={name:'',goal:14,focusLen:45,readMin:15,paperMin:15,prepMin:30,prepDays:7,maxBlock:45,horizon:21,studyDay:90,studyWeekend:180,dayStart:'09:30',dayEnd:'21:30',travel:30,lunch:'13:00',dinner:'20:00',dinnerMin:30,hoursSet:false};
+const DEFAULT_SETTINGS={name:'',goal:14,focusLen:45,readMin:15,paperMin:15,prepMin:30,prepDays:7,maxBlock:45,horizon:28,studyDay:90,studyWeekend:180,dayStart:'09:30',dayEnd:'21:30',travel:30,lunch:'13:00',dinner:'20:00',dinnerMin:30,hoursSet:false};
 const DEFAULT_SUBJECTS=[['Mathematics'],['Physics'],['Chemistry'],['Biology'],['English'],['History'],['Computer Science']].map(([n],i)=>({id:uid(),name:n,color:PALETTE[i]}));
 function emptyState(name){
   return {v:2,sample:false,settings:{...DEFAULT_SETTINGS,name:name||''},subjects:DEFAULT_SUBJECTS.map(s=>({...s,id:uid()})),
-    classes:[],tasks:[],tests:[],events:[],doneBlocks:[],log:[],revision:[]};
+    classes:[],holidays:[],tasks:[],tests:[],events:[],doneBlocks:[],log:[],revision:[]};
 }
 function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
 function exampleState(name){
@@ -73,13 +73,14 @@ function exampleState(name){
     for(let j=0;j<n;j++)log.push({id:uid(),date:iso(d),subject:subs[Math.floor(r()*subs.length)],min:Math.round(tot/n/5)*5})}
   const rv={math:['Differentiation','Integration','Sequences and series','Vectors'],phys:['Kinematics',"Newton's laws",'Waves'],chem:['Mole concept','Bonding','Organic nomenclature'],eng:['Jane Eyre: themes','Essay structure']};
   const revision=[];for(const s in rv)rv[s].forEach((topic,i)=>revision.push({id:uid(),subject:s,topic,done:i<2}));
-  return {v:2,sample:true,settings:{...DEFAULT_SETTINGS,name:name||'',hoursSet:true},subjects,classes,tasks,tests,events,doneBlocks:[],log,revision};
+  const holidays=[{id:uid(),name:'Mid-term break',start:D(12),end:D(15)}];
+  return {v:2,sample:true,settings:{...DEFAULT_SETTINGS,name:name||'',hoursSet:true},subjects,classes,holidays,tasks,tests,events,doneBlocks:[],log,revision};
 }
 function normalize(o){
   if(!o||typeof o!=='object')return null;
   const base=emptyState('');
   const s={...base,...o,settings:{...DEFAULT_SETTINGS,...(o.settings||{})}};
-  for(const k of ['subjects','classes','tasks','tests','events','doneBlocks','log','revision'])if(!Array.isArray(s[k]))s[k]=[];
+  for(const k of ['subjects','classes','holidays','tasks','tests','events','doneBlocks','log','revision'])if(!Array.isArray(s[k]))s[k]=[];
   s.events=s.events.filter(e=>e.kind!=='study'); // v1 hand-made study sessions are now planned automatically
   s.log.forEach(l=>{if(!l.id)l.id=uid()});
   delete s.free;delete s.freeDefault;
@@ -185,6 +186,117 @@ async function boot(){
 function migrateV1(){try{const r=localStorage.getItem('quire.v1');return r?normalize(JSON.parse(r)):null}catch(e){return null}}
 
 /* =========================================================
+   Subject types and test lead time
+   ========================================================= */
+const STYPES={science:['Science or maths',14],humanities:['Humanities',7],language:['Language',5],other:['Other',7]};
+function classify(name){
+  const n=String(name||'').toLowerCase();
+  if(/math|physic|chem|bio|science|computer|comp sci|\bcs\b|\bict\b|econom|account|statistic|electronic|engineer/.test(n))return 'science';
+  if(/english|hindi|french|spanish|german|sanskrit|marathi|gujarati|tamil|telugu|kannada|bengali|urdu|punjabi|japanese|mandarin|chinese|latin|arabic|language|literature|\blit\b/.test(n))return 'language';
+  if(/history|geograph|civic|politic|social|\bsst\b|psychol|sociol|business|religio|philosoph|\bevs\b|environment|law|legal/.test(n))return 'humanities';
+  return 'other';
+}
+const subType=s=>s.type||classify(s.name);
+const subLead=s=>Math.max(1,Math.min(28,+(s.prepDays??STYPES[subType(s)][1])||7));
+const isBigTest=t=>(+t.dur||0)>=90||/exam|mid-?term|final|board|annual|term[- ]end|half[- ]yearly|pre-?board/i.test(t.title||'');
+function prepDaysFor(t){const base=subLead(sub(t.subject));return Math.min(28,isBigTest(t)?Math.round(base*1.5):base)}
+
+/* =========================================================
+   School holidays
+   ========================================================= */
+const MONS=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+const MRE='(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
+function mkDate(y,m,d){if(m<0||m>11||d<1||d>31)return null;const t=today();let yy=y;
+  if(yy==null){yy=t.getFullYear();if(new Date(yy,m,d)<addDays(t,-90))yy++}else if(yy<100)yy+=2000;
+  const x=new Date(yy,m,d);return x.getMonth()===m?iso(x):null}
+function datesIn(text){
+  let s=' '+String(text||'').toLowerCase().replace(/(\d)(st|nd|rd|th)\b/g,'$1')+' ';
+  const found=[];const take=(re,fn)=>{s=s.replace(re,(...m)=>{const r=fn(m);if(r&&r.length){found.push({i:m[m.length-2],r});return ' '.repeat(m[0].length)}return m[0]})};
+  const mi=x=>MONS.indexOf(x.slice(0,3));
+  // 28 - 31 Oct 2026  /  Oct 28 - 31, 2026
+  take(new RegExp(`\\b(\\d{1,2})\\s*(?:-|–|—|to)\\s*(\\d{1,2})\\s+${MRE},?\\s*(\\d{4})?`,'g'),m=>[mkDate(m[4]?+m[4]:null,mi(m[3]),+m[1]),mkDate(m[4]?+m[4]:null,mi(m[3]),+m[2])]);
+  take(new RegExp(`\\b${MRE}\\s+(\\d{1,2})\\s*(?:-|–|—|to)\\s*(\\d{1,2}),?\\s*(\\d{4})?`,'g'),m=>[mkDate(m[4]?+m[4]:null,mi(m[1]),+m[2]),mkDate(m[4]?+m[4]:null,mi(m[1]),+m[3])]);
+  take(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g,m=>[mkDate(+m[1],+m[2]-1,+m[3])]);
+  take(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\b/g,m=>{let d=+m[1],mo=+m[2];if(mo>12&&d<=12)[d,mo]=[mo,d];return[mkDate(+m[3],mo-1,d)]});
+  take(new RegExp(`\\b(\\d{1,2})[\\s\\-]+${MRE}[,\\s\\-]*(\\d{4})?`,'g'),m=>[mkDate(m[3]?+m[3]:null,mi(m[2]),+m[1])]);
+  take(new RegExp(`\\b${MRE}\\s+(\\d{1,2})\\b,?\\s*(\\d{4})?`,'g'),m=>[mkDate(m[3]?+m[3]:null,mi(m[1]),+m[2])]);
+  return found.sort((a,b)=>a.i-b.i).flatMap(f=>f.r).filter(Boolean);
+}
+const HDR=/^(s\.?\s?no\.?|sr\.?|no\.?|#|holidays?|name|occasion|events?|festival|reason|description|from|to|date|dates|start|end|day|days|duration|remarks?)$/i;
+function holName(cells){
+  for(const c of cells){
+    let t=String(c||'');for(const re of [new RegExp(`\\b\\d{1,2}\\s*(?:-|–|—|to)\\s*\\d{1,2}\\s+${MRE},?\\s*(\\d{4})?`,'gi'),/\b\d{4}-\d{1,2}-\d{1,2}/g,/\b\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}/g,new RegExp(`\\b\\d{1,2}(st|nd|rd|th)?[\\s\\-]+${MRE}[,\\s\\-]*(\\d{4})?`,'gi'),new RegExp(`\\b${MRE}\\s+\\d{1,2}(st|nd|rd|th)?,?\\s*(\\d{4})?`,'gi')])t=t.replace(re,' ');
+    t=t.replace(/\b(mon|tues?|wed(nes)?|thu(rs)?|fri|sat(ur)?|sun)(day)?\b/gi,' ').replace(/\b(to|till|until|from)\b/gi,' ').replace(/[–—\-:,()|\/]+/g,' ').replace(/\s+/g,' ').trim();
+    if(t.length>=2&&/[a-z]/i.test(t)&&!HDR.test(t)&&!/^\d+$/.test(t))return t.length>60?t.slice(0,60):t;
+  }
+  return 'School holiday';
+}
+function analyseHolidays(rows){
+  const out=[];
+  for(const r of rows){
+    const cells=(r||[]).map(c=>String(c||'').trim()).filter(Boolean);if(!cells.length)continue;
+    const ds=datesIn(cells.join(' | '));if(!ds.length)continue;
+    const start=ds[0];let end=ds[1]&&ds[1]>=start&&diffDays(start,ds[1])<=90?ds[1]:start;
+    const name=holName(cells);
+    if(!out.some(h=>h.start===start&&h.end===end))out.push({name,start,end});
+  }
+  return out.sort((a,b)=>a.start<b.start?-1:1);
+}
+async function runHolImport(kind,payload){
+  const msg=t=>{ui.holMsg=t;ui.holBusy=false;render()};
+  ui.holBusy=true;ui.holMsg='';render();
+  try{
+    let rows=[];
+    if(kind==='link')rows=await fetchGoogleSheet(payload);
+    else if(kind==='paste')rows=parseDelimited(payload);
+    else{
+      const f=payload;
+      if(/\.ics$/i.test(f.name)){const evs=parseICS(await f.text());
+        ui.holPreview={source:f.name,list:evs.filter(e=>e.s).map(e=>{let end=e.e?e.e.day:e.s.day;if(e.e&&!e.e.time&&end>e.s.day)end=iso(addDays(parse(end),-1));return{name:(e.title||'School holiday').slice(0,60),start:e.s.day,end:end<e.s.day?e.s.day:end}})};
+        ui.holBusy=false;ui.holMsg=ui.holPreview.list.length?'':'No dates found in that calendar file.';if(!ui.holPreview.list.length)ui.holPreview=null;render();return}
+      if(/\.(xlsx|xlsm|xls|ods)$/i.test(f.name))rows=(await sheetsFromWorkbook(await f.arrayBuffer())).flatMap(s=>s.rows);
+      else rows=parseDelimited(await f.text());
+    }
+    const list=analyseHolidays(rows);
+    if(!list.length)return msg('No dates were found. Each holiday needs a date such as 28/10/2026, 28 Oct or 28 Oct – 3 Nov.');
+    ui.holPreview={source:kind==='file'?payload.name:kind==='link'?'Google Sheet':'Pasted text',list};ui.holBusy=false;ui.holMsg='';render();
+    $('#holPreview')?.scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(err){
+    if(err&&err.message==='link')return msg('That does not look like a Google Sheets link.');
+    if(err&&err.message==='access')return msg('Could not open that sheet. Set sharing to “Anyone with the link”, or copy the cells and use Paste.');
+    return msg('That file could not be read. Try .xlsx, .csv or .ics.');
+  }
+}
+const holLabel=h=>{const n=diffDays(h.start,h.end)+1;return `${fmtDate(h.start)}${n>1?' – '+fmtDate(h.end):''}<small class="muted"> · ${n} ${n===1?'day':'days'}</small>`};
+function holidaysSection(){
+  const T=TD(),list=[...S.holidays].sort((a,b)=>a.start<b.start?-1:1),up=list.filter(h=>h.end>=T),past=list.length-up.length;
+  const P=ui.holPreview,tab=ui.holTab;
+  return `<section class="sec" id="holidays">
+    <div class="sh"><h2>School holidays</h2><span class="aside">No classes on these days. The whole day becomes study time, and the plan uses it.</span></div>
+    <div class="seg" role="tablist" style="margin-bottom:12px">${[['paste','Paste list'],['link','Google Sheets link'],['file','Upload file']].map(([k,l])=>`<button type="button" role="tab" aria-selected="${tab===k}" data-act="holtab" data-t="${k}" class="${tab===k?'on':''}">${l}</button>`).join('')}</div>
+    ${tab==='link'?`<form class="toolbar" id="holLink" style="padding:0"><label class="field q"><span>Link to the holiday list</span><input class="in" id="hol-url" type="url" required placeholder="https://docs.google.com/spreadsheets/d/…"></label><button class="btn" type="submit" ${ui.holBusy?'disabled':''}>${ui.holBusy?'Reading…':'Read holidays'}</button></form>`
+    :tab==='file'?`<div class="drop" id="holDrop"><div style="min-width:0;flex:1 1 300px"><b style="font-weight:500">Upload the school's holiday list.</b><div class="muted" style="font-size:12.5px;margin-top:3px">Excel, CSV, or a calendar file (.ics) from Google Calendar or the school portal.</div></div>
+      <label class="btn sec2" style="position:relative;overflow:hidden">${ic('up')}${ui.holBusy?'Reading…':'Choose file'}<input type="file" id="holFile" accept=".xlsx,.xls,.ods,.csv,.tsv,.txt,.ics" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label></div>`
+    :`<div style="display:flex;flex-direction:column;gap:8px"><label class="field"><span>Paste the list from the school circular, an email or a spreadsheet, one holiday per line</span><textarea class="in" id="holPaste" rows="5" style="font-family:var(--sans);font-size:13px" placeholder="Diwali break    28 Oct – 3 Nov 2026&#10;Guru Nanak Jayanti, 24/11/2026&#10;Winter vacation: 24 Dec 2026 to 2 Jan 2027"></textarea></label><div><button class="btn" data-act="hol-paste" ${ui.holBusy?'disabled':''}>${ui.holBusy?'Reading…':'Read holidays'}</button></div></div>`}
+    ${ui.holMsg?`<div class="warn" style="margin-top:12px;border:0"><span>${esc(ui.holMsg)}</span></div>`:''}
+    ${P?`<div id="holPreview" style="margin-top:16px;border-top:2px solid var(--gold);padding-top:12px">
+      <div class="sh"><h2>Check the dates</h2><span class="aside">${esc(P.source)} · ${P.list.length} found</span></div>
+      <div class="tw" style="border-top:0"><table><thead><tr><th>Holiday</th><th>Dates</th></tr></thead><tbody>${P.list.map(h=>`<tr><td>${esc(h.name)}</td><td class="num">${holLabel(h)}</td></tr>`).join('')}</tbody></table></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;padding:12px 0"><button class="btn" data-act="hol-apply">Add ${P.list.length} ${P.list.length===1?'holiday':'holidays'}</button><button class="btn ghost" data-act="hol-cancel">Discard</button></div></div>`:''}
+    <div class="tw" style="margin-top:14px"><table><thead><tr><th>Holiday</th><th>Dates</th><th></th></tr></thead><tbody>
+      ${up.map(h=>`<tr><td>${esc(h.name)}${h.start<=T?' <span class="kind" style="color:var(--gold);margin-left:6px">Now</span>':''}</td><td class="num">${holLabel(h)}</td><td class="r"><span class="rowact"><button class="icon" data-act="del-hol" data-id="${h.id}" aria-label="Remove">${ic('del')}</button></span></td></tr>`).join('')||`<tr><td colspan="3" class="empty">No upcoming holidays added yet.</td></tr>`}
+    </tbody></table></div>
+    ${past?`<p class="muted" style="font-size:12.5px;margin:8px 0 0">${past} past ${past===1?'holiday':'holidays'} hidden.</p>`:''}
+    <form class="form" id="holForm" autocomplete="off" style="grid-template-columns:minmax(0,2fr) repeat(2,minmax(0,1fr)) auto">
+      <label class="field f-title"><span>Add one by hand</span><input class="in" id="hf-name" required placeholder="e.g. Diwali break"></label>
+      <label class="field"><span>From</span><input class="in num" type="date" id="hf-s" required></label>
+      <label class="field"><span>To</span><input class="in num" type="date" id="hf-e"></label>
+      <div class="acts"><button class="btn sec2" type="submit">Add</button></div>
+    </form>
+  </section>`;
+}
+
+/* =========================================================
    Lookups
    ========================================================= */
 const sub=id=>S.subjects.find(s=>s.id===id)||{id,name:id?'Other':'General',color:'#8A93A3'};
@@ -194,12 +306,13 @@ const byNext=(a,b)=>a.due<b.due?-1:a.due>b.due?1:PRI[a.priority]-PRI[b.priority]
 function relShort(d){const n=diffDays(TD(),d);return n<0?`${-n} d overdue`:n===0?'due today':n===1?'due tomorrow':`due ${fmtDate(d)}`}
 function dueHTML(d,done){const n=diffDays(TD(),d);let rel=n<0?`${-n} d overdue`:n===0?'Today':n===1?'Tomorrow':`In ${n} days`;if(done)rel='Done';
   return `<span class="due ${n<0&&!done?'late':''}">${fmtDate(d)}<small>${rel}</small></span>`}
-function dayFlags(day){const evs=S.events.filter(e=>e.allDay&&e.day===day);return{holiday:evs.some(e=>e.kind==='holiday'),away:evs.some(e=>e.kind==='away')}}
+function dayFlags(day){const evs=S.events.filter(e=>e.allDay&&e.day===day);const h=S.holidays.find(x=>x.start<=day&&x.end>=day);return{holiday:!!h||evs.some(e=>e.kind==='holiday'),holidayName:h?h.name:(evs.find(e=>e.kind==='holiday')||{}).title,away:evs.some(e=>e.kind==='away')}}
 function classesOn(day,generic){const wd=parse(day).getDay();if(!generic&&dayFlags(day).holiday)return[];return S.classes.filter(c=>c.dow.includes(wd)&&(generic||!(c.skip||[]).includes(day)))}
 function fixedOn(day){
   const wd=parse(day).getDay(),out=[];
   for(const c of classesOn(day))out.push({id:c.id,src:'class',kind:'class',title:sub(c.subject).name,subject:c.subject,room:c.room,start:c.start,end:c.end});
   for(const e of S.events)if(e.day===day||(Array.isArray(e.dow)&&e.dow.includes(wd)&&!(e.skip||[]).includes(day)))out.push({...e,src:'event'});
+  for(const h of S.holidays)if(h.start<=day&&h.end>=day)out.push({id:h.id,src:'holiday',kind:'holiday',title:h.name,allDay:true,start:'00:00',end:'23:59'});
   for(const t of S.tests)if(t.date===day)out.push({id:t.id,src:'test',kind:'test',title:t.title,subject:t.subject,start:t.time,end:fromMin(toMin(t.time)+(t.dur||60))});
   return out.sort((a,b)=>(b.allDay?1:0)-(a.allDay?1:0)||toMin(a.start)-toMin(b.start));
 }
@@ -238,7 +351,7 @@ let planCache=null,planStamp='';
 function plan(){
   const stamp=TD()+'|'+Math.floor(nowHM()/5)+'|'+planVersion;
   if(planCache&&planStamp===stamp)return planCache;
-  const st=S.settings,T=TD(),H=Math.max(7,Math.min(42,+st.horizon||21));
+  const st=S.settings,T=TD(),lead=Math.max(0,...S.tests.filter(t=>t.date>=T).map(t=>Math.min(42,diffDays(T,t.date)))),H=Math.max(7,Math.min(42,Math.max(+st.horizon||28,lead+1)));
   const days=[...Array(H)].map((_,i)=>iso(addDays(today(),i)));
   const fr={};days.forEach(d=>fr[d]=freeOn(d));
   const pre=liveBlocks();
@@ -263,14 +376,17 @@ function plan(){
   const tests=S.tests.filter(t=>t.date>=T).sort((a,b)=>a.date<b.date?-1:1);
   for(const t of tests){
     let missed=0;
-    for(let i=+st.prepDays;i>=1;i--){
+    const N=prepDaysFor(t);
+    for(let i=N;i>=1;i--){
       const d=iso(addDays(parse(t.date),-i));if(d<T||!fr[d])continue;
       const key=`prep:${t.id}:${d}`;if(doneKeys.has(key))continue;
-      const min=(+st.prepMin)+(i<=2?15:0);
-      const s=takeEarly(fr[d],min)||takeUpTo(fr[d],min,20);
+      const off=!classesOn(d).length,base=+st.prepMin;
+      const min=i<=2?base+15:i<=7?base:Math.max(20,base-5);
+      const len=off&&i<=7?min+15:min;
+      const s=takeEarly(fr[d],len)||takeUpTo(fr[d],len,20);
       if(s)add(d,s,{key,kind:'prep',ref:t.id,subject:t.subject,title:`Prep: ${t.title}`});else if(d!==T)missed++;
     }
-    if(missed)warnings.push({type:'prep',text:`${missed} prep ${missed===1?'session':'sessions'} for “${t.title}” could not fit. Add free time in the week before ${fmtDate(t.date)}.`});
+    if(missed)warnings.push({type:'prep',text:`${missed} prep ${missed===1?'session':'sessions'} for “${t.title}” could not fit. Add free time in the ${N} days before ${fmtDate(t.date)}.`});
   }
   // 3. Homework, earliest deadline first, spread across the days before it is due.
   const tasks=openTasks().sort(byNext);
@@ -289,7 +405,7 @@ function plan(){
         if(rem<=0)break;
         let cap=tgt(d)+extra-load(d);const minLen=Math.min(25,rem);
         while(rem>0&&cap>=minLen){
-          const want=Math.min(rem,+st.maxBlock,cap);if(want<Math.min(25,rem))break;
+          let want=Math.min(rem,+st.maxBlock,cap);if(rem-want>0&&rem-want<20)want=Math.min(rem,+st.maxBlock+15);if(want<Math.min(25,rem))break;
           const s=takeEarly(fr[d],want)||takeUpTo(fr[d],want,Math.min(25,want));if(!s)break;
           add(d,s,{key:`hw:${t.id}:${d}:${s[0]}`,kind:'hw',ref:t.id,subject:t.subject,title:t.title});
           const m=s[1]-s[0];rem-=m;cap-=m;
@@ -349,7 +465,7 @@ function markBlock(key,on,actual,obj){
    ========================================================= */
 const VIEWS=[['dashboard','Dashboard','dash'],['timetable','Timetable','week'],['tasks','Homework','tasks'],['tests','Tests','test'],['calendar','Calendar','cal'],['focus','Focus','focus'],['progress','Progress','prog']];
 const VIEWS_B=[['settings','Settings','set'],['integrations','Integrations','int']];
-function currentView(){const h=(location.hash||'').replace('#','');return [...VIEWS,...VIEWS_B].some(v=>v[0]===h)?h:'dashboard'}
+function currentView(){const h=(location.hash||'').replace('#','');if(h==='holidays')return 'timetable';return [...VIEWS,...VIEWS_B].some(v=>v[0]===h)?h:'dashboard'}
 function renderNav(v){
   const open=openTasks(),late=open.filter(t=>t.due<TD()).length;
   const li=([id,l,i])=>{let c='';
@@ -422,8 +538,56 @@ function setupSteps(){
     [S.classes.length>0,'Add your classes','Upload your timetable or enter it period by period.','timetable','Add classes'],
     [S.settings.hoursSet,'Check your study hours','Free time comes from your classes. Set when you get home and when you stop.','timetable','Review'],
     [S.tasks.length>0,'Add homework','With the due date and how long it will take.','tasks','Add homework'],
-    [S.tests.length>0,'Add upcoming tests','Prep sessions start a week before each one.','tests','Add tests']];
+    [S.tests.length>0,'Add upcoming tests','Prep starts up to two weeks before, depending on the subject.','tests','Add tests'],
+    [S.holidays.length>0,'Add school holidays','Holidays become full study days in the plan.','timetable','Add holidays']];
   return steps;
+}
+function timeline(day){
+  const T=TD(),nm=nowHM(),isToday=day===T;
+  const fixed=fixedOn(day).filter(e=>!e.allDay),blocks=blocksOn(day);
+  const items=[...fixed.map(e=>({t:'fixed',s:toMin(e.start),e:toMin(e.end),x:e})),...blocks.map(b=>({t:'plan',s:toMin(b.start),e:toMin(b.end),x:b}))].sort((a,b)=>a.s-b.s||a.e-b.e);
+  // Collapse runs of classes into one school block.
+  const rows=[];
+  for(const it of items){
+    const p=rows[rows.length-1];
+    if(it.t==='fixed'&&it.x.kind==='class'&&p&&p.t==='school'&&it.s-p.e<=45){p.e=Math.max(p.e,it.e);p.list.push(it.x);continue}
+    if(it.t==='fixed'&&it.x.kind==='class'){rows.push({t:'school',s:it.s,e:it.e,list:[it.x]});continue}
+    rows.push(it);
+  }
+  if(!rows.length)return `<div class="empty">Nothing planned${isToday?' today':''}.</div>`;
+  const free=availOn(day);
+  const out=[];let cursor=null,nowDone=!isToday;
+  const nowRow=()=>`<div class="tl-now"><span class="num">${fromMin(nm)}</span><i></i></div>`;
+  for(const r of rows){
+    if(!nowDone&&nm<r.s){out.push(nowRow());nowDone=true}
+    if(cursor!==null&&r.s-cursor>=20){
+      const fm=free.reduce((a,[x,y])=>a+Math.max(0,Math.min(y,r.s)-Math.max(x,cursor)),0);
+      if(fm>=20)out.push(`<div class="tl-gap"><span></span><span class="rail"></span><span>Free · ${fmtMin(fm)}</span></div>`);
+    }
+    const past=isToday&&r.e<=nm;
+    if(r.t==='school'){
+      out.push(`<details class="tl-row school ${past?'past':''}"><summary><span class="tm num">${fromMin(r.s)}<small>${fromMin(r.e)}</small></span><span class="rail"><i></i></span>
+        <span class="tl-c"><b>School</b><small>${r.list.length} ${r.list.length===1?'class':'classes'} · ${[...new Set(r.list.map(c=>c.title))].slice(0,4).join(', ')}${new Set(r.list.map(c=>c.title)).size>4?'…':''}</small></span><span class="tl-a muted">Show</span></summary>
+        <div class="tl-sub">${r.list.map(c=>`<div><span class="num">${c.start}–${c.end}</span><span><i class="sq" style="background:${esc(sub(c.subject).color)}"></i>${esc(c.title)}</span><span class="muted">${esc(c.room||'')}</span></div>`).join('')}</div></details>`);
+    }else if(r.t==='fixed'){
+      const e=r.x;
+      out.push(`<div class="tl-row ${e.kind} ${past?'past':''}" style="--c:${evColor(e)}"><span class="tm num">${e.start}<small>${e.end}</small></span><span class="rail"><i></i></span>
+        <span class="tl-c"><b>${esc(e.title)}</b><small>${KINDS[e.kind]||''}${e.room?' · '+esc(e.room):''}</small></span><span class="tl-a"></span></div>`);
+    }else{
+      const b=r.x,live=F.started&&F.block&&F.block.key===b.key;
+      let act;
+      if(b.done)act='<span class="done-tag">Done</span>';
+      else if(live)act=`<span class="live num" data-clock>${clockTxt(F.remaining)}</span>${F.running?'<button class="btn sec2 sm" data-act="t-pause">Pause</button>':`<button class="btn sm" data-act="t-resume">${ic('play')}Resume</button>`}<button class="btn sec2 sm" data-act="t-end">Finish</button>`;
+      else if(isToday)act=`<button class="btn sec2 sm" data-act="run-block" data-key="${esc(b.key)}" ${F.started?'disabled':''}>${ic('play')}Start</button>`;
+      else act='';
+      out.push(`<div class="tl-row plan ${b.done?'done':''} ${past&&!b.done&&!live?'past':''} ${live?'live':''}" style="--c:${planColor(b)}"><span class="tm num">${b.start}<small>${b.end}</small></span>
+        <span class="rail"><input type="checkbox" class="ck tl-ck" data-block="${esc(b.key)}" ${b.done?'checked':''} aria-label="Mark ${esc(b.title)} done"></span>
+        <span class="tl-c"><b>${esc(b.title)}</b><small><i class="sq" style="background:${planColor(b)}"></i>${PLANL[b.kind]}${b.subject&&b.kind!=='study'?' · '+esc(sub(b.subject).name):''} · ${fmtMin(b.min)}</small></span><span class="tl-a">${act}</span></div>`);
+    }
+    cursor=Math.max(cursor??0,r.e);
+  }
+  if(!nowDone&&isToday)out.push(nowRow());
+  return `<div class="tl">${out.join('')}</div>`;
 }
 function vDashboard(){
   const T=TD(),now=new Date(),hr=now.getHours(),nm=nowHM();
@@ -433,74 +597,72 @@ function vDashboard(){
   const wk=weekMins(0),goal=(+S.settings.goal||14)*60;
   const greet=hr<12?'Good morning':hr<17?'Good afternoon':'Good evening';
   const name=S.settings.name?`, ${esc(S.settings.name)}`:'';
-  const todayBlocks=blocksOn(T),todayFixed=fixedOn(T);
+  const todayBlocks=blocksOn(T);
   const planMin=todayBlocks.reduce((a,b)=>a+b.min,0),doneMin=todayBlocks.filter(b=>b.done).reduce((a,b)=>a+b.min,0);
   const next=P.blocks.find(b=>!b.done&&(b.day>T||(b.day===T&&toMin(b.end)>nm)));
   const steps=setupSteps(),setupLeft=steps.filter(s=>!s[0]).length;
-  const upcoming=(()=>{const ds=[...new Set(P.blocks.filter(b=>!b.done&&b.day>T).map(b=>b.day))].slice(0,2);return P.blocks.filter(b=>!b.done&&ds.includes(b.day))})();
+  const nextDay=(()=>{for(let i=1;i<8;i++){const d=iso(addDays(today(),i));if(blocksOn(d).some(b=>!b.done))return d}return null})();
   const ws=weekStart(today()),habitDays=[...Array(7)].map((_,i)=>iso(addDays(ws,i)));
   const hasDone=(k,d)=>S.doneBlocks.some(b=>b.kind===k&&b.day===d);
   const habitRow=(k,l)=>`<div class="habit"><span>${l}</span>${habitDays.map(d=>`<i class="${hasDone(k,d)?'y':''} ${d===T?'t':''} ${d>T?'f':''}" title="${fmtDate(d)}"></i>`).join('')}</div>`;
+  const hol=dayFlags(T).holidayName;
+  const upHol=S.holidays.filter(h=>h.end>=T).sort((a,b)=>a.start<b.start?-1:1)[0];
+  const dueLabel=t=>{const n=diffDays(T,t.due);return n<0?`${-n} d overdue`:n===0?'today':n===1?'tomorrow':fmtDate(t.due)};
 
   return `
   <div class="phead">
-    <div><h1>${greet}${name}</h1><div class="sub">${DOWL[now.getDay()]} ${now.getDate()} ${MONL[now.getMonth()]} ${now.getFullYear()} · Week ${isoWeek(now)}</div></div>
+    <div><h1>${greet}${name}</h1><div class="sub">${DOWL[now.getDay()]} ${now.getDate()} ${MONL[now.getMonth()]} ${now.getFullYear()} · Week ${isoWeek(now)}${hol?` · <span style="color:var(--gold)">${esc(hol)}</span>`:''}</div></div>
     <dl class="overview num">
-      <div><dt>Planned today</dt><dd>${fmtMin(planMin)}</dd></div>
-      <div><dt>Done today</dt><dd>${fmtMin(doneMin)}</dd></div>
+      <div><dt>Study today</dt><dd>${fmtMin(doneMin)}<span class="of"> / ${fmtMin(planMin)}</span></dd></div>
       <div><dt>Overdue</dt><dd class="${late.length?'red':''}">${late.length}</dd></div>
-      <div><dt>Tests in 10 days</dt><dd>${upTests.filter(t=>diffDays(T,t.date)<=10).length}</dd></div>
+      <div><dt>Tests in 14 days</dt><dd>${upTests.filter(t=>diffDays(T,t.date)<=14).length}</dd></div>
+      <div><dt>This week</dt><dd>${fmtH(wk)}<span class="of"> / ${S.settings.goal} h</span></dd></div>
     </dl>
   </div>
-  <div class="grid2">
+  <div class="grid2 dash">
     <div>
-      ${setupLeft?`<section class="sec"><div class="sh"><h2>Set up your planner</h2><span class="aside num">${4-setupLeft} of 4 done</span></div>
+      ${setupLeft?`<section class="sec"><div class="sh"><h2>Set up your planner</h2><span class="aside num">${steps.length-setupLeft} of ${steps.length} done</span></div>
         <div class="steps">${steps.map(([ok,t,d,v,l])=>`<div class="step ${ok?'ok':''}"><div><b>${t}</b><small>${d}</small></div>${ok?'<span></span>':`<a class="btn sec2 sm" href="#${v}">${l}</a>`}</div>`).join('')}</div>
         ${!S.classes.length&&!S.tasks.length?`<div style="padding:12px 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="muted" style="font-size:13px">Want to see how it works first?</span><button class="btn ghost sm" data-act="confirm" data-c="example" style="padding:0">Load an example week</button>${ui.confirm==='example'?'<button class="btn danger sm" data-act="do-example">Replace my data with the example</button>':''}</div>`:''}
       </section>`:''}
       ${next?`<div class="next">
-        <div><div class="label">${next.day===T&&toMin(next.start)<=nm?'Now':'Next'}</div><h3>${esc(next.title)}</h3>
-          <div class="meta">${next.subject?subjMark(next.subject):'<span>General</span>'}<span class="num">${next.day===T?'Today':fmtDate(next.day)}, ${next.start}–${next.end}</span><span>${PLANL[next.kind]}</span></div></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">${F.started&&F.block&&F.block.key===next.key?`<span class="live num big-live" data-clock>${clockTxt(F.remaining)}</span>`:`<button class="btn" data-act="run-block" data-key="${esc(next.key)}" ${F.started?'disabled':''}>${ic('play')}Start timer</button>`}<button class="btn sec2" data-act="focus-block" data-key="${esc(next.key)}">${ic('full')}Focus mode</button></div></div>`:''}
+        <div style="min-width:0"><div class="label">${next.day===T&&toMin(next.start)<=nm?'Now':next.day===T?'Next':'Next · '+fmtDate(next.day)}</div><h3>${esc(next.title)}</h3>
+          <div class="meta">${next.subject?subjMark(next.subject):''}<span class="num">${next.start}–${next.end}</span><span>${PLANL[next.kind]} · ${fmtMin(next.min)}</span></div></div>
+        <div class="next-a">${F.started&&F.block&&F.block.key===next.key?`<span class="live num big-live" data-clock>${clockTxt(F.remaining)}</span>`:`<button class="btn" data-act="run-block" data-key="${esc(next.key)}" ${F.started?'disabled':''}>${ic('play')}Start ${next.min} min</button>`}<button class="btn sec2" data-act="focus-block" data-key="${esc(next.key)}" title="Full-screen timer">${ic('full')}Focus</button></div></div>`:''}
 
       <section class="sec">
-        <div class="sh"><h2>Today</h2><button class="aside btn ghost sm" style="padding:0;height:auto" data-act="cal-open" data-day="${T}">Open in calendar</button></div>
-        ${detailPanel()}
-        <div class="calwrap">${(()=>{const R=gridRange();return timeGrid({cols:[dayCol(T,{head:`<b>${DOWL[now.getDay()]}</b><span class="num">${now.getDate()} ${MON[now.getMonth()]}</span>`})],H0:R.H0,H1:R.H1,HH:30,minW:0,wide:true})})()}</div>
-        <div class="sh" style="margin-top:14px"><h2>Today's study sessions</h2><span class="aside num">${fmtMin(doneMin)} of ${fmtMin(planMin)} done</span></div>
-        ${todayBlocks.map(b=>planRow(b)).join('')||`<div class="empty">No study planned today${availOn(T).length?'.':'. There is no free time left today.'}</div>`}
+        <div class="sh"><h2>Today</h2><span class="aside num">${planMin?`${fmtMin(doneMin)} of ${fmtMin(planMin)} studied · `:''}<button class="btn ghost sm" style="padding:0;height:auto" data-act="cal-open" data-day="${T}">Calendar</button></span></div>
+        ${timeline(T)}
       </section>
 
-      <section class="sec">
-        <div class="sh"><h2>Homework</h2><a class="aside" href="#tasks">${open.length?`All ${open.length} open`:'Add homework'}</a></div>
-        <div class="rows">${open.slice(0,6).map(taskRow).join('')||'<div class="empty">No homework to do.</div>'}</div>
-      </section>
-
-      <section class="sec">
-        <div class="sh"><h2>Coming up</h2><a class="aside" href="#calendar">Full plan</a></div>
-        ${(()=>{const g={};upcoming.forEach(b=>(g[b.day]=g[b.day]||[]).push(b));const tm=iso(addDays(today(),1));
-          return Object.entries(g).map(([d,bs])=>`<div class="dgrp"><span>${d===tm?'Tomorrow':DOWL[parse(d).getDay()]}</span><span class="num muted">${fmtDate(d).slice(4)} · ${fmtMin(bs.reduce((a,b)=>a+b.min,0))}</span></div>`+bs.map(b=>planRow(b)).join('')).join('')})()||'<div class="empty">No further sessions planned.</div>'}
-      </section>
+      ${nextDay?`<section class="sec">
+        <div class="sh"><h2>${nextDay===iso(addDays(today(),1))?'Tomorrow':DOWL[parse(nextDay).getDay()]}</h2><span class="aside num">${fmtDate(nextDay)} · ${fmtMin(blocksOn(nextDay).reduce((a,b)=>a+b.min,0))} planned · <button class="btn ghost sm" style="padding:0;height:auto" data-act="cal-open" data-day="${nextDay}">Calendar</button></span></div>
+        <div class="mini">${blocksOn(nextDay).map(b=>`<div><span class="num">${b.start}</span><i class="sq" style="background:${planColor(b)}"></i><span class="t">${esc(b.title)}</span><span class="num muted">${fmtMin(b.min)}</span></div>`).join('')}</div>
+      </section>`:''}
     </div>
 
     <div class="col2">
-      ${P.warnings.length?`<section class="sec"><div class="sh"><h2>Plan needs attention</h2><span class="aside num">${P.warnings.length}</span></div>${P.warnings.map(w=>`<div class="warn"><span>${esc(w.text)}</span></div>`).join('')}</section>`:''}
+      ${P.warnings.length?`<section class="sec"><div class="sh"><h2>Plan needs attention</h2><span class="aside num">${P.warnings.length}</span></div>${P.warnings.slice(0,4).map(w=>`<div class="warn"><span>${esc(w.text)}</span></div>`).join('')}${P.warnings.length>4?`<div class="muted" style="font-size:12.5px;padding-top:6px">and ${P.warnings.length-4} more</div>`:''}</section>`:''}
       <section class="sec">
         <div class="sh"><h2>Upcoming tests</h2><a class="aside" href="#tests">All tests</a></div>
-        ${upTests.slice(0,4).map(t=>{const n=diffDays(T,t.date);const pr=P.blocks.filter(b=>b.kind==='prep'&&b.ref===t.id);return `<div class="cd"><div class="n num ${n<=2?'soon':''}">${n}<small>${n===1?'day':'days'}</small></div>
-          <div class="x">${esc(t.title)}<small>${esc(sub(t.subject).name)} · ${fmtDate(t.date)}, ${t.time}</small>
-          <div class="bar gold" style="margin-top:6px"><span style="width:${t.prep}%"></span></div><small>Prepared ${t.prep}% · ${pr.filter(b=>b.done).length} of ${pr.length} prep sessions done</small></div></div>`}).join('')||'<div class="empty">No tests scheduled.</div>'}
+        ${upTests.slice(0,4).map(t=>{const n=diffDays(T,t.date),pd=prepDaysFor(t),pr=P.blocks.filter(b=>b.kind==='prep'&&b.ref===t.id),ps=iso(addDays(parse(t.date),-pd));return `<div class="cd"><div class="n num ${n<=2?'soon':''}">${n}<small>${n===1?'day':'days'}</small></div>
+          <div class="x">${esc(t.title)}<small>${esc(sub(t.subject).name)} · ${fmtDate(t.date)}</small>
+          <div class="bar gold" style="margin:7px 0 4px"><span style="width:${t.prep}%"></span></div><small>${ps>T?`Prep starts ${fmtDate(ps)}`:`${pr.filter(b=>b.done).length} of ${pr.length} prep sessions done`} · ready ${t.prep}%</small></div></div>`}).join('')||'<div class="empty">No tests scheduled. <a href="#tests">Add one</a>.</div>'}
       </section>
       <section class="sec">
-        <div class="sh"><h2>Daily habits this week</h2></div>
+        <div class="sh"><h2>Homework due</h2><a class="aside" href="#tasks">${open.length?`All ${open.length}`:'Add'}</a></div>
+        ${open.slice(0,5).map(t=>`<div class="hw ${t.due<T?'late':''}"><input type="checkbox" class="ck" data-toggle="${t.id}" aria-label="Mark ${esc(t.title)} done"><div><span class="t">${esc(t.title)}</span><small><i class="sq" style="background:${esc(sub(t.subject).color)}"></i>${esc(sub(t.subject).name)} · <span class="${t.due<T?'red':''}">due ${dueLabel(t)}</span> · ${fmtMin(t.est)}</small></div></div>`).join('')||'<div class="empty">Nothing due.</div>'}
+      </section>
+      ${upHol?`<section class="sec"><div class="sh"><h2>Next holiday</h2><a class="aside" href="#timetable">All holidays</a></div><div class="hw nock"><div><span class="t">${esc(upHol.name)}</span><small>${fmtDate(upHol.start)}${upHol.end!==upHol.start?' – '+fmtDate(upHol.end):''} · ${upHol.start<=T?'now':diffDays(T,upHol.start)+' days away'}</small></div></div></section>`:''}
+      <section class="sec">
+        <div class="sh"><h2>Daily habits</h2></div>
         <div class="habit hd"><span></span>${['M','T','W','T','F','S','S'].map(x=>`<span>${x}</span>`).join('')}</div>
         ${habitRow('read',`Reading · ${S.settings.readMin} min`)}${habitRow('paper',`Past papers · ${S.settings.paperMin} min`)}
       </section>
       <section class="sec">
-        <div class="sh"><h2>Weekly study hours</h2><span class="aside num">Goal ${S.settings.goal} h</span></div>
-        <div class="big num"><b>${fmtH(wk)}</b><span class="muted">of ${S.settings.goal} h · ${Math.round(wk/goal*100)}%</span></div>
-        <div class="bar" style="margin:8px 0 14px"><span style="width:${Math.min(100,wk/goal*100)}%"></span></div>
-        ${weekChart()}
+        <div class="sh"><h2>Study this week</h2><span class="aside num">${fmtH(wk)} of ${S.settings.goal} h</span></div>
+        <div class="bar" style="margin:2px 0 14px"><span style="width:${Math.min(100,wk/goal*100)}%"></span></div>
+        ${wk?weekChart():'<div class="empty" style="padding:4px 0 8px">Nothing logged yet this week. Finish a session and it shows here.</div>'}
       </section>
     </div>
   </div>`;
@@ -759,6 +921,8 @@ function vTimetable(){
     ${S.classes.length?`<div style="padding:10px 0 0">${ui.confirm==='clear-classes'?'<button class="btn danger sm" data-act="do-clear-classes">Confirm: remove all classes</button> <button class="btn sec2 sm" data-act="confirm" data-c="">Cancel</button>':'<button class="btn ghost sm" style="padding:0" data-act="confirm" data-c="clear-classes">Remove all classes</button>'}</div>`:''}
   </section>
 
+  ${holidaysSection()}
+
   <section class="sec">
     <div class="sh"><h2>How your free time is worked out</h2>${ui.flash==='hours'?'<span class="ok">Saved. Free time and the plan have been updated.</span>':''}</div>
     <form id="hoursForm" class="hours-rules" autocomplete="off">
@@ -832,10 +996,10 @@ function vTests(){
     <td class="title">${esc(t.title)}<small>${fmtMin(t.dur||60)}</small></td><td>${subjMark(t.subject)}</td>
     <td class="num">${fmtDate(t.date)}<small class="muted" style="display:block;font-size:11.5px">${t.time}</small></td>
     <td class="r num ${n<=2?'red':''}">${n===0?'Today':n+' d'}</td>
-    <td class="num hide-sm">${pr.filter(b=>b.done).length} / ${pr.length}<small class="muted" style="display:block;font-size:11.5px">${fmtMin(pr.reduce((a,b)=>a+b.min,0))} planned</small></td>
+    <td class="num hide-sm">${pr.filter(b=>b.done).length} / ${pr.length} done<small class="muted" style="display:block;font-size:11.5px">From ${fmtDate(iso(addDays(parse(t.date),-prepDaysFor(t))))} · ${prepDaysFor(t)} days · ${fmtH(pr.reduce((a,b)=>a+b.min,0))}</small></td>
     <td style="min-width:160px"><div style="display:flex;gap:10px;align-items:center"><input class="range" type="range" min="0" max="100" step="5" value="${t.prep}" data-prep="${t.id}" aria-label="How prepared"><span class="num muted" style="width:34px;text-align:right" id="pp-${t.id}">${t.prep}%</span></div></td>
     <td class="r"><span class="rowact"><button class="icon" data-act="del-test" data-id="${t.id}" aria-label="Delete">${ic('del')}</button></span></td></tr>`};
-  return `<div class="phead"><div><h1>Tests</h1><div class="sub">Each test gets a prep session on each of the ${S.settings.prepDays} days before it, longer in the final two days.</div></div>
+  return `<div class="phead"><div><h1>Tests</h1><div class="sub">Prep starts ${STYPES.science[1]} days ahead for sciences and maths, ${STYPES.humanities[1]} for humanities and ${STYPES.language[1]} for languages, with 50% longer for exams. Sessions get longer as the test gets closer. Change the lead time for each subject in Settings.</div></div>
     <dl class="overview num"><div><dt>Upcoming</dt><dd>${up.length}</dd></div><div><dt>Within 7 days</dt><dd>${up.filter(t=>diffDays(T,t.date)<=7).length}</dd></div><div><dt>Average readiness</dt><dd>${avg}%</dd></div></dl></div>
   <div class="formhead"><span class="label">Add test</span></div>
   <form class="form" id="testForm" autocomplete="off">
@@ -907,6 +1071,7 @@ function detailPanel(){
   let acts='';
   if(src==='plan')acts=e.done?`<button class="btn sec2 sm" data-act="block-undo" data-key="${esc(id)}">Mark not done</button>`:`<button class="btn sm" data-act="focus-block" data-key="${esc(id)}">${ic('play')}Start focus</button><button class="btn sec2 sm" data-act="block-done" data-key="${esc(id)}">Mark done</button>`;
   else if(src==='test')acts='<a class="btn sec2 sm" href="#tests">Edit in Tests</a>';
+  else if(src==='holiday')acts='<a class="btn sec2 sm" href="#holidays">Edit holidays</a>';
   else if(src==='class')acts=`<button class="btn sec2 sm" data-act="cancel-class" data-id="${id}" data-day="${day}">Cancelled this day</button><a class="btn sec2 sm" href="#timetable">Edit timetable</a>`;
   else acts=e.dow?`<button class="btn sec2 sm" data-act="skip-ev" data-id="${id}" data-day="${day}">Skip this day only</button><button class="btn danger sm" data-act="del-ev" data-id="${id}">Delete every week</button>`:`<button class="btn danger sm" data-act="del-ev" data-id="${id}">Delete</button>`;
   return `<div class="evdetail"><div><span class="kind ${e.kind}">${lbl}${src==='plan'?' · planned automatically':e.dow?' · every '+DOWL[parse(day).getDay()]:''}</span><h3>${esc(e.title)}</h3>
@@ -1099,16 +1264,18 @@ function vSettings(){
       <button class="btn" type="submit">Save</button></div>${ui.flash==='prof'?'<span class="ok">Saved.</span>':''}</form></div>
   <div class="set"><div><h2>Planning rules</h2><p>How the automatic plan is built. Set reading or past papers to 0 to turn them off.</p></div>
     <form class="body" id="ruleForm"><div class="row">
-      ${num('rf-read','Reading per day (min)',st.readMin,0,120)}${num('rf-paper','Past papers per day (min)',st.paperMin,0,120)}${num('rf-prep','Test prep per day (min)',st.prepMin,10,180)}
+      ${num('rf-read','Reading per day (min)',st.readMin,0,120)}${num('rf-paper','Past papers per day (min)',st.paperMin,0,120)}${num('rf-prep','Test prep session (min)',st.prepMin,10,180)}
     </div><div class="row">
-      ${num('rf-sday','Study per school day (min)',st.studyDay,0,600,15,190)}${num('rf-swe','Study per day off (min)',st.studyWeekend,0,720,15,190)}</div><div class="row">${num('rf-days','Prep starts (days before test)',st.prepDays,1,21,1,190)}${num('rf-block','Longest homework block (min)',st.maxBlock,15,180,5,190)}${num('rf-hor','Plan ahead (days)',st.horizon,7,42,1)}
+      ${num('rf-sday','Study per school day (min)',st.studyDay,0,600,15,190)}${num('rf-swe','Study per day off (min)',st.studyWeekend,0,720,15,190)}</div><div class="row">${num('rf-block','Longest homework block (min)',st.maxBlock,15,180,5,190)}${num('rf-hor','Plan ahead (days)',st.horizon,7,42,1)}
       <button class="btn" type="submit">Save rules</button></div>
       <span class="muted" style="font-size:12.5px">Prep sessions in the last two days before a test are 15 minutes longer. Past papers follow the subject of your next test.</span>
       ${ui.flash==='rules'?'<span class="ok">Saved. The plan has been rebuilt.</span>':''}</form></div>
-  <div class="set"><div><h2>Subjects</h2><p>Each subject keeps one colour across the calendar, lists and charts. Muted tones read best.</p></div>
+  <div class="set"><div><h2>Subjects</h2><p>Each subject keeps one colour everywhere. The type sets how many days before a test the prep starts, and you can change the number of days.</p></div>
     <div class="body">${S.subjects.map(s=>{const used=S.tasks.some(t=>t.subject===s.id)||S.tests.some(t=>t.subject===s.id)||S.classes.some(t=>t.subject===s.id);return `<div class="row" style="align-items:center">
       <input type="color" class="sw" value="${esc(s.color)}" data-color="${s.id}" aria-label="Colour for ${esc(s.name)}">
-      <input class="in" style="flex:1 1 200px;width:auto" value="${esc(s.name)}" data-sname="${s.id}" aria-label="Subject name">
+      <input class="in" style="flex:1 1 180px;width:auto" value="${esc(s.name)}" data-sname="${s.id}" aria-label="Subject name">
+      <select class="in" style="width:150px" data-stype="${s.id}" aria-label="Subject type">${Object.entries(STYPES).map(([k,[l]])=>`<option value="${k}" ${subType(s)===k?'selected':''}>${l}</option>`).join('')}</select>
+      <label class="ckl" style="font-size:12.5px;color:var(--slate);display:inline-flex;align-items:center;gap:6px"><input class="in num" type="number" min="1" max="28" style="width:60px" value="${subLead(s)}" data-slead="${s.id}" aria-label="Days of prep">days</label>
       <button class="icon" data-act="del-sub" data-id="${s.id}" ${used?'disabled title="Used by classes, homework or tests"':''} aria-label="Remove subject" style="${used?'opacity:.3;cursor:not-allowed':''}">${ic('del')}</button></div>`}).join('')}
       <form class="row" id="subForm" autocomplete="off"><input type="color" class="sw" id="nf-color" value="${PALETTE[S.subjects.length%PALETTE.length]}" aria-label="Colour"><input class="in" style="flex:1 1 200px;width:auto" id="nf-name" required placeholder="Add a subject"><button class="btn sec2" type="submit">Add</button></form></div></div>
   <div class="set"><div><h2>Data</h2><p>${CLOUD?'Your planner is saved to your account and syncs across devices.':'Everything is stored in this browser on this device.'}</p></div>
@@ -1151,7 +1318,7 @@ function downloadText(name,txt,type){const b=new Blob([txt],{type});const a=docu
    Render
    ========================================================= */
 const ui={taskF:{subject:'all',status:'open',q:''},sort:{key:'due',dir:1},editTask:null,selEvent:null,confirm:null,flash:null,pick:{cls:[1]},
-  calView:(window.matchMedia&&matchMedia('(max-width:700px)').matches)?'day':'week',calDate:null,newEv:null,preview:null,impTab:'link',impMsg:'',impBusy:false,impUrl:''};
+  calView:(window.matchMedia&&matchMedia('(max-width:700px)').matches)?'day':'week',calDate:null,newEv:null,preview:null,impTab:'link',impMsg:'',impBusy:false,impUrl:'',holTab:'paste',holMsg:'',holBusy:false,holPreview:null};
 const VFN={dashboard:vDashboard,timetable:vTimetable,tasks:vTasks,tests:vTests,calendar:vCalendar,focus:vFocus,progress:vProgress,settings:vSettings,integrations:vIntegrations};
 let lastView=null;
 function render(){
@@ -1163,6 +1330,7 @@ function render(){
   const nw=$('#calwrap');if(nw)nw.scrollLeft=v===lastView?cs:0;
   if(v==='focus'&&fsOn)$('#stage')?.classList.add('fs');
   if(v!=='focus'&&fsOn)setFs(false);
+  if(location.hash==='#holidays'&&v!==lastView)setTimeout(()=>$('#holidays')?.scrollIntoView({block:'start'}),0);
   lastView=v;ui.flash=null;
   renderRunbar();
 }
@@ -1210,6 +1378,11 @@ document.addEventListener('click',e=>{
     case 'skip-ev':{const ev=S.events.find(x=>x.id===id);if(ev){ev.skip=(ev.skip||[]).concat(a.dataset.day)}ui.selEvent=null;touch();render();break}
     case 'cancel-class':{const c=S.classes.find(x=>x.id===id);if(c){c.skip=(c.skip||[]).concat(a.dataset.day)}ui.selEvent=null;touch();render();break}
     case 'del-class-day':{const c=S.classes.find(x=>x.id===id);if(c){c.dow=c.dow.filter(x=>x!==+a.dataset.d);if(!c.dow.length)S.classes=S.classes.filter(x=>x!==c)}ui.selEvent=null;touch();render();break}
+    case 'holtab':ui.holTab=a.dataset.t;ui.holMsg='';render();break;
+    case 'hol-paste':runHolImport('paste',$('#holPaste').value);break;
+    case 'hol-apply':{const n=ui.holPreview.list.length;for(const h of ui.holPreview.list)if(!S.holidays.some(x=>x.start===h.start&&x.end===h.end))S.holidays.push({id:uid(),...h});ui.holPreview=null;touch();ui.holMsg='';render();break}
+    case 'hol-cancel':ui.holPreview=null;render();break;
+    case 'del-hol':S.holidays=S.holidays.filter(h=>h.id!==id);touch();render();break;
     case 'imptab':ui.impTab=a.dataset.t;ui.impMsg='';render();break;
     case 'imp-paste':runImport('paste',$('#clsPaste').value);break;
     case 'pv-apply':applyPreview(a.dataset.m);render();window.scrollTo(0,0);break;
@@ -1246,11 +1419,14 @@ document.addEventListener('change',e=>{
   if(el.dataset.rev){const r=S.revision.find(x=>x.id===el.dataset.rev);if(r){r.done=el.checked;touch();render()}return}
   if(el.dataset.prep){const t=S.tests.find(x=>x.id===el.dataset.prep);if(t){t.prep=+el.value;touch()}return}
   if(el.dataset.color){const s=sub(el.dataset.color);s.color=el.value;touch();return}
+  if(el.dataset.stype){const x=S.subjects.find(z=>z.id===el.dataset.stype);if(x){x.type=el.value;delete x.prepDays;touch();render()}return}
+  if(el.dataset.slead){const x=S.subjects.find(z=>z.id===el.dataset.slead);if(x){x.prepDays=Math.max(1,Math.min(28,Math.round(+el.value||7)));touch()}return}
   if(el.dataset.sname){const s=S.subjects.find(x=>x.id===el.dataset.sname);if(s&&el.value.trim()){s.name=el.value.trim();touch()}return}
   if(el.id==='tsub'){ui.taskF.subject=el.value;$('#tbody').innerHTML=tasksBody();return}
   if(el.id==='fTask'){const[k,v]=el.value.split('|');F.blockKey=null;F.taskId=null;F.subject=null;
     if(k==='b'){const b=plan().blocks.find(x=>x.key===v);if(b){F.blockKey=v;F.subject=b.subject;F.len=b.min;F.remaining=b.min*60000}}
     else if(k==='t')F.taskId=v;else if(k==='s')F.subject=v;F.msg=null;render();return}
+  if(el.id==='holFile'){if(el.files&&el.files[0])runHolImport('file',el.files[0]);return}
   if(el.id==='clsFile'){if(el.files&&el.files[0])runImport('file',el.files[0]);return}
   if(el.id==='ef-kind'&&ui.newEv){Object.assign(ui.newEv,{kind:el.value,title:$('#ef-title').value,day:$('#ef-day').value||ui.newEv.day,start:$('#ef-s')?.value||ui.newEv.start,end:$('#ef-e')?.value||ui.newEv.end,repeat:$('#ef-rep')?.checked});render();return}
   if(el.id==='ics-file'){const msg=$('#ics-msg'),kind=$('#ics-kind').value;readFile(el.files&&el.files[0],txt=>{
@@ -1268,7 +1444,7 @@ document.addEventListener('input',e=>{
 });
 ['dragover','dragenter'].forEach(t=>document.addEventListener(t,e=>{const d=e.target.closest&&e.target.closest('#drop');if(d){e.preventDefault();d.classList.add('over')}}));
 document.addEventListener('dragleave',e=>{const d=e.target.closest&&e.target.closest('#drop');if(d)d.classList.remove('over')});
-document.addEventListener('drop',e=>{const d=e.target.closest&&e.target.closest('#drop');if(!d)return;e.preventDefault();d.classList.remove('over');if(e.dataTransfer.files[0])runImport('file',e.dataTransfer.files[0])});
+document.addEventListener('drop',e=>{const h=e.target.closest&&e.target.closest('#holDrop');if(h){e.preventDefault();if(e.dataTransfer.files[0])runHolImport('file',e.dataTransfer.files[0]);return}const d=e.target.closest&&e.target.closest('#drop');if(!d)return;e.preventDefault();d.classList.remove('over');if(e.dataTransfer.files[0])runImport('file',e.dataTransfer.files[0])});
 
 function timesOk(sId,eId,form){const s=$(sId).value,en=$(eId).value;if(!s||!en||toMin(en)<=toMin(s)){$(eId).setCustomValidity('End must be after start');form.reportValidity();$(eId).setCustomValidity('');return false}return true}
 document.addEventListener('submit',e=>{
@@ -1286,12 +1462,14 @@ document.addEventListener('submit',e=>{
     const s=$('#cf-s').value,en=$('#cf-e').value;S.classes.push({id:uid(),subject:$('#cf-sub').value,dow:[...ui.pick.cls],start:s,end:en,room:$('#cf-room').value.trim()});
     touch();render();const ns=$('#cf-s'),ne=$('#cf-e');if(ns){ns.value=en;ne.value=fromMin(toMin(en)+(toMin(en)-toMin(s)))}}
   if(f.id==='hoursForm'){const st=S.settings;st.travel=Math.max(0,Math.min(180,Math.round(+$('#hr-travel').value||0)));st.dayStart=$('#hr-start').value||'09:30';st.lunch=$('#hr-lunch').value||'13:00';st.dayEnd=$('#hr-end').value||'21:30';st.dinner=$('#hr-dinner').value||'20:00';st.dinnerMin=Math.max(0,Math.min(120,Math.round(+$('#hr-dmin').value||0)));st.hoursSet=true;touch();ui.flash='hours';render()}
+  if(f.id==='holLink'){runHolImport('link',$('#hol-url').value.trim())}
+  if(f.id==='holForm'){const a=$('#hf-s').value,b=$('#hf-e').value||a;if(!a){f.reportValidity();return}S.holidays.push({id:uid(),name:$('#hf-name').value.trim()||'School holiday',start:a<=b?a:b,end:a<=b?b:a});touch();render()}
   if(f.id==='impLink'){ui.impUrl=$('#imp-url').value.trim();runImport('link',ui.impUrl)}
   if(f.id==='profForm'){S.settings.name=$('#sf-name').value.trim();S.settings.goal=Math.max(1,+$('#sf-goal').value||14);S.settings.focusLen=Math.max(5,+$('#sf-len').value||45);
     if(!F.started){F.len=S.settings.focusLen;F.remaining=F.len*60000}touch();ui.flash='prof';render()}
   if(f.id==='ruleForm'){const st=S.settings,n=(id,lo,hi,d)=>Math.min(hi,Math.max(lo,Math.round(+$(id).value)))||d;
     st.readMin=Math.min(120,Math.max(0,Math.round(+$('#rf-read').value||0)));st.paperMin=Math.min(120,Math.max(0,Math.round(+$('#rf-paper').value||0)));
-    st.prepMin=n('#rf-prep',10,180,30);st.studyDay=Math.min(600,Math.max(0,Math.round(+$('#rf-sday').value||0)));st.studyWeekend=Math.min(720,Math.max(0,Math.round(+$('#rf-swe').value||0)));st.prepDays=n('#rf-days',1,21,7);st.maxBlock=n('#rf-block',15,180,45);st.horizon=n('#rf-hor',7,42,21);
+    st.prepMin=n('#rf-prep',10,180,30);st.studyDay=Math.min(600,Math.max(0,Math.round(+$('#rf-sday').value||0)));st.studyWeekend=Math.min(720,Math.max(0,Math.round(+$('#rf-swe').value||0)));st.maxBlock=n('#rf-block',15,180,45);st.horizon=n('#rf-hor',7,42,21);
     touch();ui.flash='rules';render()}
   if(f.id==='subForm'){const n=$('#nf-name').value.trim();if(!n)return;S.subjects.push({id:uid(),name:n,color:$('#nf-color').value});touch();render()}
   if(f.id==='revForm'){const t=$('#rf-topic').value.trim();if(!t)return;S.revision.push({id:uid(),subject:$('#rf-sub').value,topic:t,done:false});touch();render()}
